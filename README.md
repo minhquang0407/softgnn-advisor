@@ -1,83 +1,128 @@
+<div align="center">
+
 # SoftGNN Advisor
 
-> **Know what changed. Know what tests hit it. Generate what is missing.**
+### Graph-guided, runtime-proven, LLM-assisted PR testing
 
-SoftGNN Advisor is an experimental CLI for **graph-guided, runtime-proven, LLM-assisted PR testing**.
+**Know what changed. Know what tests hit it. Generate what is missing.**
 
-It builds a code/test graph, maps which tests actually execute which functions, scans PR impact, detects missing runtime coverage, and generates semantic pytest tests with a verification loop.
+[![Tests](https://github.com/minhquang0407/softgnn-advisor/actions/workflows/tests.yml/badge.svg)](https://github.com/minhquang0407/softgnn-advisor/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/tag/minhquang0407/softgnn-advisor?label=release)](https://github.com/minhquang0407/softgnn-advisor/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![LLM](https://img.shields.io/badge/LLM-Gemini%20%7C%20OpenAI--compatible-8A2BE2)](#configure-an-llm-provider)
 
-Current status: **v0.1 alpha / developer preview**.
-
----
-
-## Why SoftGNN is different
-
-Most AI test generators do this:
-
-```text
-read changed file -> ask an LLM for tests -> run pytest
-```
-
-SoftGNN adds graph and runtime evidence:
-
-```text
-build code graph
-map runtime test execution
-scan PR impact
-find missing runtime coverage
-generate semantic tests
-verify with pytest
-refresh runtime graph
-confirm PR coverage again
-```
-
-The goal is not just to generate tests. The goal is to prove that generated tests hit the impacted code.
+</div>
 
 ---
 
-## Core capabilities
+## What is SoftGNN?
 
+SoftGNN Advisor is an experimental CLI that combines a **code graph**, **runtime test graph**, and **LLM test generation** to help you understand PR impact and generate missing pytest tests.
+
+Most AI testing tools stop at:
+
+```text
+read changed file -> ask LLM for tests -> run pytest
+```
+
+SoftGNN aims for a stronger loop:
+
+```text
+scan PR -> find impacted code -> map tests that actually execute it -> generate missing tests -> verify -> refresh runtime proof
+```
+
+> **Core thesis:** a generated test is not truly useful until it passes pytest and proves it hits the intended code.
+
+---
+
+## The pipeline
+
+```mermaid
+flowchart LR
+    A[PR Diff] --> B[Code Graph]
+    B --> C[Impact Scan]
+    C --> D[Missing Runtime Coverage]
+    D --> E[LLM Semantic Test Generation]
+    E --> F[Schema + Safety Validation]
+    F --> G[Transactional Patch]
+    G --> H[Pytest Verify]
+    H --> I[Runtime Test Mapping]
+    I --> J[PR Scan Confirmation]
+
+    H -- failure --> K[LLM Repair]
+    K --> F
+```
+
+---
+
+## Why it is different
+
+| Capability | Naive LLM test generation | SoftGNN Advisor |
+|---|---:|---:|
+| Reads changed code | ✅ | ✅ |
+| Generates pytest tests | ✅ | ✅ |
+| Validates structured LLM output | ❌ | ✅ |
+| Patches transactionally | ❌ | ✅ |
+| Rolls back failed generated tests | ❌ | ✅ |
+| Maps tests to functions at runtime | ❌ | ✅ |
+| Confirms PR coverage after generation | ❌ | ✅ |
+| Supports Gemini/OpenAI-compatible LLMs | varies | ✅ |
+
+---
+
+## Features
+
+- **PR impact scanning** between Git revisions.
 - **Code graph extraction** from Python source files.
 - **Runtime test mapping** from pytest execution to source functions.
-- **PR impact scanning** between Git revisions.
-- **Missing coverage detection** at function/test-target level.
+- **Missing runtime coverage detection** for impacted functions.
 - **LLM-assisted semantic pytest generation**.
-- **Gemini and OpenAI-compatible providers**.
-- **Structured JSON validation** before writing generated tests.
-- **Transactional patching and rollback** for generated test blocks.
-- **Pytest verification and bounded repair loop**.
-- **Runtime refresh after generated tests pass**.
-- **PR scan confirmation after runtime refresh**.
+- **Native Gemini provider** and **OpenAI-compatible provider**.
+- **Structured JSON validation** before writing tests.
+- **Safety validation** against unsafe generated code patterns.
+- **Transactional patching** with generated block markers.
+- **Pytest verification** and bounded generated-test repair loop.
+- **Runtime refresh** after successful generation.
+- **PR scan confirmation** after runtime refresh.
 
 ---
 
-## Safety model
+## Verified demo
 
-SoftGNN is intentionally conservative in v0.1:
+On a local `social-link-prediction` repo, SoftGNN used Gemini to generate behavior tests for:
 
 ```text
-writes tests/ only by default
-wraps generated code in markers
-validates LLM output before patching
-runs pytest before accepting changes
-rolls back failed generated edits by default
-never requires committing API keys
+FUNC:is_edge_index_sorted
 ```
 
-Generated blocks look like:
+Result:
+
+```text
+pytest: 6 passed
+runtime mode: per-test
+runtime edges: 336
+persisted: True
+missing coverage before: 0
+missing coverage after: 0
+```
+
+Fallback without an LLM produced only a shallow smoke test:
 
 ```python
-# <softgnn-generated target="FUNC:example" start>
-...
-# <softgnn-generated target="FUNC:example" end>
+assert callable(is_edge_index_sorted)
 ```
+
+Gemini-assisted generation produced behavior checks for sorted edges, unsorted source order, unsorted target order, single-edge input, and invalid-shape errors.
+
+Read the full demo: [docs/examples/social-link-demo.md](docs/examples/social-link-demo.md)
 
 ---
 
-## Installation
+## Install
 
 ```bash
-git clone https://github.com/YOUR_USER/softgnn-advisor.git
+git clone https://github.com/minhquang0407/softgnn-advisor.git
 cd softgnn-advisor
 python -m venv .venv
 ```
@@ -100,7 +145,9 @@ pip install -r requirements.txt
 
 ---
 
-## Configure Gemini
+## Configure an LLM provider
+
+### Gemini
 
 ```powershell
 $env:SOFTGNN_LLM_PROVIDER="gemini"
@@ -108,15 +155,13 @@ $env:SOFTGNN_LLM_MODEL="gemini-3-flash"
 $env:SOFTGNN_LLM_API_KEY="YOUR_GEMINI_API_KEY"
 ```
 
-If your account uses another model ID, set that instead:
+If your API account uses another model ID:
 
 ```powershell
 $env:SOFTGNN_LLM_MODEL="gemini-2.5-flash"
 ```
 
----
-
-## Configure an OpenAI-compatible endpoint
+### OpenAI-compatible endpoint
 
 ```powershell
 $env:SOFTGNN_LLM_PROVIDER="openai-compatible"
@@ -125,11 +170,19 @@ $env:SOFTGNN_LLM_MODEL="qwen2.5-coder:7b"
 $env:SOFTGNN_LLM_API_KEY="optional-if-your-endpoint-needs-it"
 ```
 
+Generation strategies:
+
+```text
+template  -> deterministic templates only
+llm       -> require configured LLM unless fallback is allowed
+auto      -> try LLM first, fallback to templates when unavailable
+```
+
 ---
 
-## Quick demo
+## Quickstart
 
-Run plan mode first. This does not modify files:
+Start with plan mode. This does not modify files:
 
 ```powershell
 python softgnn.py generate-tests `
@@ -164,39 +217,39 @@ python softgnn.py generate-tests `
   --confirm-pr-scan
 ```
 
-Expected pipeline:
-
-```text
-Gemini/OpenAI-compatible LLM generates semantic tests
-SoftGNN validates JSON and safety
-SoftGNN patches tests transactionally
-pytest verifies generated tests
-runtime mapping refreshes test/function edges
-PR scan confirms missing coverage status
-```
+More details: [docs/quickstart.md](docs/quickstart.md)
 
 ---
 
-## Example verified result
+## Safety model
 
-On the `social-link-prediction` demo repo, Gemini generated behavior tests for:
-
-```text
-FUNC:is_edge_index_sorted
-```
-
-Result:
+SoftGNN is conservative by default:
 
 ```text
-pytest: 6 passed
-runtime mode: per-test
-runtime edges: 336
-persisted: True
-missing coverage before: 0
-missing coverage after: 0
+writes tests/ only
+wraps generated code in markers
+validates LLM output before patching
+runs pytest before accepting generated tests
+rolls back failed generated edits by default
+never requires committing API keys
 ```
 
-See [docs/examples/social-link-demo.md](docs/examples/social-link-demo.md).
+Generated test blocks are marked:
+
+```python
+# <softgnn-generated target="FUNC:example" start>
+...
+# <softgnn-generated target="FUNC:example" end>
+```
+
+Recommended workflow:
+
+```text
+run on a feature branch
+start with --mode plan
+use --mode patch after review
+inspect git diff before commit
+```
 
 ---
 
@@ -216,19 +269,11 @@ python softgnn.py generate-tests --project social-link --repo-path "C:\path\to\r
 
 ---
 
-## Provider behavior
+## Project status
 
-Generation strategies:
+Current release: **v0.1.0-alpha**
 
-```text
-template  -> deterministic templates only
-llm       -> require configured LLM unless fallback allowed
-auto      -> try LLM, fallback to templates when unavailable
-```
-
-Without an LLM, SoftGNN still works, but targets without semantic templates may produce shallow smoke tests.
-
-With Gemini/OpenAI-compatible providers, SoftGNN can generate richer semantic tests and repair failing generated blocks.
+This is a developer preview. Generated tests should be reviewed before commit. Production-code fixes are intentionally out of scope for v0.1.
 
 ---
 
@@ -237,34 +282,21 @@ With Gemini/OpenAI-compatible providers, SoftGNN can generate richer semantic te
 Short version:
 
 ```text
-v0.1  Single-agent LLM-assisted test generation
-M4    Runtime-Proven Test Generation
-M5    Graph Impact Report / Dashboard
-M6    Learned Test Prioritization / GNN Ranking
-M7    Multi-Agent Quality Swarm
-M8    Large-scale repo automation
-M9    Controlled production-code fixes
+M4  Runtime-Proven Test Generation
+M5  Graph Impact Report / Dashboard
+M6  Learned Test Prioritization / GNN Ranking
+M7  Multi-Agent Quality Swarm
+M8  Large-scale repo automation
+M9  Controlled production-code fixes
 ```
 
-See [ROADMAP.md](ROADMAP.md).
+Read more:
 
----
-
-## Release status
-
-SoftGNN Advisor v0.1 is an alpha. It is intended for experimentation and developer workflows, not unattended production code modification.
-
-Recommended first use:
-
-```text
-plan mode
-inspect generated tests
-patch mode on a feature branch
-review diff before commit
-```
+- [ROADMAP.md](ROADMAP.md)
+- [docs/future-milestones.md](docs/future-milestones.md)
 
 ---
 
 ## License
 
-Add your preferred license before publishing publicly.
+MIT License. See [LICENSE](LICENSE).
