@@ -1,0 +1,820 @@
+import ast
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from core.pr_scanner import PRScanner
+from core.llm_provider import LLMRequest, build_llm_provider, load_llm_config
+from core.llm_test_schema import parse_generated_test, parse_repair_response
+from infrastructure.pipelines.runtime_coverage_mapper import RuntimeCoverageMapper
+
+
+@dataclass
+class TestGenerationTarget:
+    node_id: str
+    source_file: str
+    reason: str
+    priority: float
+    evidence: list = field(default_factory=list)
+    suggested_file: str = ''
+
+
+@dataclass
+class GeneratedTestPlan:
+    target_id: str
+    test_file: str
+    test_names: list
+    rationale: str
+    code: str
+    assumptions: list = field(default_factory=list)
+
+
+@dataclass
+class PytestFailure:
+    test_name: str
+    error_type: str
+    message: str
+    traceback: str
+
+
+@dataclass
+class RepairAttempt:
+    iteration: int
+    action: str
+    pytest_returncode: int
+    pytest_output: str
+
+
+@dataclass
+class TestGenerationResult:
+    targets: list
+    plans: list
+    files_written: list
+    pytest_returncode: int | None
+    pytest_output: str
+    warnings: list
+    mode: str
+    failures: list = field(default_factory=list)
+    repair_attempts: list = field(default_factory=list)
+    rolled_back: bool = False
+    runtime_result: object | None = None
+    post_scan: object | None = None
+    pre_missing_coverage_count: int = 0
+    post_missing_coverage_count: int | None = None
+
+
+class TestGenerationAgent:
+    def __init__(self, project, repo_path=None, llm_provider=None, llm_model=None, llm_base_url=None, llm_api_key=None, llm_timeout=None):
+        self.project = project
+        self.scanner = PRScanner(project, repo_path=repo_path)
+        self.repo_path = os.path.abspath(repo_path or self.scanner.repo_path)
+        self.llm_config = load_llm_config(provider=llm_provider, base_url=llm_base_url, model=llm_model, api_key=llm_api_key, timeout=llm_timeout)
+        self.llm_provider = build_llm_provider(self.llm_config)
+
+    def generate(self, base='main', head='HEAD', mode='plan', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096):
+        if mode not in ('plan', 'patch'):
+            raise ValueError("mode must be 'plan' or 'patch'")
+        if generation_strategy not in ('template', 'llm', 'auto'):
+            raise ValueError("generation_strategy must be one of: template, llm, auto")
+        warnings = []
+        scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True)
+        pre_missing_count = len(scan.missing_coverage)
+        if target_id:
+            if not source_file:
+                source_file = self._infer_source_file(target_id, scan)
+            if not source_file:
+                raise ValueError('source_file is required when target_id cannot be resolved from PR scan')
+            targets = [TestGenerationTarget(target_id, source_file, 'explicit target override', 999.0, ['explicit user/CLI target'], self._suggest_test_file(source_file))]
+        else:
+            targets = self._rank_targets(scan)[:max_targets]
+        plans = [self._build_plan(target, generation_strategy, warnings, llm_required, llm_temperature, llm_max_tokens) for target in targets]
+        files_written = []
+        pytest_returncode = None
+        pytest_output = ''
+        failures = []
+        repair_attempts = []
+        rolled_back = False
+        runtime_result = None
+        post_scan = None
+        post_missing_count = None
+        if refresh_runtime is None:
+            refresh_runtime = mode == 'patch' and verify
+        if mode == 'patch' and plans:
+            snapshots = self._snapshot_plans(plans)
+            files_written = self._apply_plans(plans, warnings)
+            if verify and files_written:
+                pytest_files = self._pytest_targets(files_written, pytest_args)
+                pytest_returncode, pytest_output = self._run_pytest(pytest_files)
+                failures = self._parse_pytest_failures(pytest_output) if pytest_returncode else []
+                remaining_repairs = max(0, int(repair_iters or 0))
+                iteration = 0
+                while pytest_returncode and remaining_repairs > 0:
+                    iteration += 1
+                    action = self._repair_generated_tests(plans, pytest_output, warnings, generation_strategy, llm_required, llm_temperature, llm_max_tokens)
+                    pytest_returncode, pytest_output = self._run_pytest(pytest_files)
+                    repair_attempts.append(RepairAttempt(iteration, action, pytest_returncode, pytest_output))
+                    failures = self._parse_pytest_failures(pytest_output) if pytest_returncode else []
+                    remaining_repairs -= 1
+                    if action == 'no-op':
+                        break
+                if pytest_returncode and not keep_failing_tests:
+                    self._rollback_snapshots(snapshots)
+                    rolled_back = True
+                    warnings.append('Rolled back generated tests because pytest failed and --keep-failing-tests was not set.')
+                    files_written = []
+                elif pytest_returncode == 0 and refresh_runtime:
+                    runtime_result = RuntimeCoverageMapper(self.project, repo_path=self.repo_path).map_runtime_coverage(pytest_args=pytest_args or 'tests', mode=runtime_mode, persist=True)
+                    if confirm_pr_scan:
+                        post_scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True)
+                        post_missing_count = len(post_scan.missing_coverage)
+        return TestGenerationResult(targets, plans, files_written, pytest_returncode, pytest_output, warnings + scan.warnings, mode, failures, repair_attempts, rolled_back, runtime_result, post_scan, pre_missing_count, post_missing_count)
+
+    def _rank_targets(self, scan):
+        changed_by_id = {node.full_id: node for node in scan.changed_nodes}
+        contract_by_id = {change.function_id: change for change in scan.contract_changes}
+        hotspot_labels = {h.label: h for h in scan.impact_hotspots}
+        suggestions = {cover: suggestion for suggestion in scan.suggested_tests for cover in suggestion.covers}
+        targets = []
+        for gap in scan.missing_coverage:
+            node = changed_by_id.get(gap.target_id)
+            if not node or node.node_type != 'Function':
+                continue
+            priority = 100.0
+            evidence = [gap.reason]
+            contract = contract_by_id.get(gap.target_id)
+            if contract:
+                if contract.signature_changed or contract.return_pattern_changed:
+                    priority += 80
+                elif contract.behavior_changed:
+                    priority += 50
+                elif contract.source_only_changed:
+                    priority += 20
+                evidence.extend(contract.summary)
+            if 'no runtime' in gap.reason:
+                priority += 60
+            if 'no runtime or static' in gap.reason:
+                priority += 40
+            if node.label in hotspot_labels:
+                priority += 30
+                evidence.append('high impact hotspot')
+            suggested_file = suggestions.get(gap.target_id).suggested_file if gap.target_id in suggestions else self._suggest_test_file(node.source_file)
+            targets.append(TestGenerationTarget(gap.target_id, node.source_file, gap.reason, priority, evidence, suggested_file))
+        targets.sort(key=lambda t: t.priority, reverse=True)
+        return targets
+
+    def _infer_source_file(self, target_id, scan):
+        for node in scan.changed_nodes:
+            if node.full_id == target_id:
+                return node.source_file
+        return None
+
+    def _build_plan(self, target, generation_strategy='template', warnings=None, llm_required=False, llm_temperature=0.1, llm_max_tokens=4096):
+        warnings = warnings if warnings is not None else []
+        context = self._collect_source_context(target)
+        if generation_strategy in ('llm', 'auto'):
+            llm_plan = self._try_build_llm_plan(target, context, warnings, llm_required, llm_temperature, llm_max_tokens)
+            if llm_plan:
+                return llm_plan
+        function_name = target.node_id.replace('FUNC:', '')
+        test_name = f"test_{self._safe_name(function_name)}_semantic"
+        test_file = target.suggested_file or self._suggest_test_file(target.source_file)
+        code, assumptions = self._generate_semantic_pytest_code(target, context, test_name)
+        rationale = f"Generated semantic test because {target.node_id} has missing coverage: {target.reason}."
+        return GeneratedTestPlan(target.node_id, test_file, [test_name], rationale, code, assumptions)
+
+    def _try_build_llm_plan(self, target, context, warnings, llm_required, llm_temperature, llm_max_tokens):
+        if not getattr(self.llm_provider, 'available', False):
+            message = 'LLM provider not configured; falling back to template generation.'
+            if llm_required:
+                raise RuntimeError(message)
+            warnings.append(message)
+            return None
+        request = LLMRequest(
+            system_prompt=self._llm_generation_system_prompt(),
+            user_prompt=self._llm_generation_user_prompt(target, context),
+            temperature=llm_temperature,
+            max_tokens=llm_max_tokens,
+        )
+        try:
+            response = self.llm_provider.complete(request)
+            generated = parse_generated_test(response.text)
+        except Exception as exc:
+            message = f'LLM generation failed; falling back to template generation: {exc}'
+            if llm_required:
+                raise RuntimeError(message) from exc
+            warnings.append(message)
+            return None
+        return GeneratedTestPlan(
+            target.node_id,
+            generated.test_file,
+            generated.test_names,
+            generated.rationale,
+            generated.code,
+            generated.assumptions,
+        )
+
+    def _llm_generation_system_prompt(self):
+        return """You are SoftGNN's test generation assistant. Generate concise, deterministic pytest tests only. Return exactly one JSON object and no markdown. Never modify production code. Tests must write only under tmp_path if file IO is needed. Mock heavy dependencies, training loops, GPU/CUDA, network, and external services."""
+
+    def _llm_generation_user_prompt(self, target, context):
+        existing_tests = self._read_text(os.path.join(self.repo_path, (target.suggested_file or self._suggest_test_file(target.source_file)).replace('/', os.sep)))
+        qualname = target.node_id.replace('FUNC:', '')
+        snippet = self._target_source_snippet(qualname, context)
+        return f"""
+Return JSON with this schema:
+{{
+  "test_file": "tests/test_*.py",
+  "test_names": ["test_name"],
+  "code": "pytest code as a string",
+  "rationale": "why this test matters",
+  "assumptions": ["assumption"],
+  "requires": ["pytest"]
+}}
+
+Target id: {target.node_id}
+Source file: {target.source_file}
+Missing coverage reason: {target.reason}
+Evidence: {'; '.join(target.evidence) if target.evidence else '-'}
+Suggested test file: {target.suggested_file or self._suggest_test_file(target.source_file)}
+Module path: {context['module_path']}
+
+Target source snippet:
+```python
+{snippet[:6000]}
+```
+
+Relevant imports:
+```python
+{chr(10).join(context.get('imports', []))[:2000]}
+```
+
+Existing tests in suggested file:
+```python
+{existing_tests[-6000:] if existing_tests else '# no existing tests'}
+```
+
+Constraints:
+- Return JSON only.
+- test_file must be under tests/.
+- code must define at least one pytest function listed in test_names.
+- Prefer behavior assertions over callable/hasattr smoke tests.
+- Use monkeypatch/tmp_path for side effects.
+- Mock heavy training, CUDA, network, and filesystem writes outside tmp_path.
+- Do not use subprocess, requests, urllib, socket, os.system, or shutil.rmtree.
+""".strip()
+
+    def _target_source_snippet(self, qualname, context):
+        parts = qualname.split('.')
+        if len(parts) >= 2:
+            class_name, method_name = parts[-2], parts[-1]
+            cls = context.get('classes', {}).get(class_name, {})
+            method = cls.get('methods', {}).get(method_name)
+            if method:
+                return method.get('source', '')
+            return cls.get('source', '')
+        fn = context.get('functions', {}).get(parts[-1])
+        return fn.get('source', '') if fn else context.get('source', '')[:4000]
+
+    def _collect_source_context(self, target):
+        source_path = os.path.join(self.repo_path, target.source_file.replace('/', os.sep))
+        source = self._read_text(source_path)
+        context = {
+            'source': source,
+            'imports': self._extract_imports(source),
+            'classes': {},
+            'functions': {},
+            'module_path': self._module_path(target.source_file),
+        }
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return context
+        lines = source.splitlines()
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                methods = {}
+                for child in node.body:
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        methods[child.name] = {
+                            'signature': self._signature(child),
+                            'source': self._slice_source(lines, child),
+                        }
+                context['classes'][node.name] = {
+                    'source': self._slice_source(lines, node),
+                    'methods': methods,
+                }
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                context['functions'][node.name] = {
+                    'signature': self._signature(node),
+                    'source': self._slice_source(lines, node),
+                }
+        return context
+
+    def _generate_semantic_pytest_code(self, target, context, test_name):
+        qualname = target.node_id.replace('FUNC:', '')
+        module_path = context['module_path']
+        if qualname.startswith('HGTLinkPrediction.') or qualname == 'HGTLinkPrediction':
+            return self._hgt_link_prediction_template(module_path), [
+                'Uses tiny heterogeneous metadata to avoid full training/data loading.',
+                'Validates constructor behavior, decoder filtering, and missing metadata error path.',
+            ]
+        if qualname.startswith('HGTEncoder.') or qualname == 'HGTEncoder':
+            return self._hgt_encoder_template(module_path), [
+                'Uses an empty convolution stack to isolate projection/dropout behavior.',
+                'Validates output keys, shapes, and ReLU non-negativity with tiny tensors.',
+            ]
+        if qualname.startswith('InteractionMLP.') or qualname == 'InteractionMLP':
+            return self._interaction_mlp_template(module_path), [
+                'Uses tiny source/destination embeddings.',
+                'Validates decoder returns one score per edge pair.',
+            ]
+        if qualname == 'train_one_config':
+            return self._train_one_config_template(module_path), [
+                'Mocks model construction, train/evaluate callbacks, AMP scaler, CUDA cleanup, and file writes.',
+                'Runs a one-epoch CPU-safe path to validate config usage and return contract without full training.',
+            ]
+        return self._fallback_semantic_template(target, context, test_name), [
+            'Fallback semantic smoke test based on importability/callability.',
+            'Manual refinement may be needed for complex side effects or required fixtures.',
+        ]
+
+    def _hgt_link_prediction_template(self, module_path):
+        return f'''"""Semantic tests generated by SoftGNN M3."""
+
+import pytest
+
+from {module_path} import HGTEncoder, HGTLinkPrediction
+
+
+def test_hgt_link_prediction_initializes_metadata_encoder_and_decoders():
+    metadata = (
+        ["user", "post"],
+        [
+            ("user", "writes", "post"),
+            ("post", "rev_writes", "user"),
+        ],
+    )
+
+    model = HGTLinkPrediction(
+        hidden_channels=8,
+        out_channels=1,
+        metadata=metadata,
+        dropout=0.0,
+        num_heads=2,
+        num_layers=1,
+    )
+
+    assert model.metadata == metadata
+    assert isinstance(model.encoder, HGTEncoder)
+    assert set(model.lin_dict.keys()) == {{"user", "post"}}
+    assert len(model.convs) == 1
+    assert "__writes__" in model.decoders
+    assert "__rev_writes__" not in model.decoders
+
+
+def test_hgt_link_prediction_requires_data_or_metadata():
+    with pytest.raises(ValueError, match="data.*metadata"):
+        HGTLinkPrediction(hidden_channels=8, out_channels=1)
+'''
+
+    def _hgt_encoder_template(self, module_path):
+        return f'''"""Semantic tests generated by SoftGNN M3."""
+
+import torch
+from torch import nn
+
+from {module_path} import HGTEncoder
+
+
+def test_hgt_encoder_forward_projects_each_node_type_without_convs():
+    lin_dict = nn.ModuleDict({{
+        "user": nn.Linear(3, 4),
+        "post": nn.Linear(2, 4),
+    }})
+    dropout = nn.Dropout(p=0.0)
+    encoder = HGTEncoder(hidden_channels=4, lin_dict=lin_dict, convs=nn.ModuleList(), dropout=dropout)
+
+    x_dict = {{
+        "user": torch.randn(2, 3),
+        "post": torch.randn(3, 2),
+    }}
+
+    out = encoder(x_dict, edge_index_dict={{}})
+
+    assert set(out.keys()) == {{"user", "post"}}
+    assert out["user"].shape == (2, 4)
+    assert out["post"].shape == (3, 4)
+    assert torch.all(out["user"] >= 0)
+    assert torch.all(out["post"] >= 0)
+'''
+
+    def _interaction_mlp_template(self, module_path):
+        return f'''"""Semantic tests generated by SoftGNN M3."""
+
+import torch
+
+from {module_path} import InteractionMLP
+
+
+def test_interaction_mlp_returns_one_score_per_pair():
+    model = InteractionMLP(input_dim=4, hidden_dim=8, output_dim=1, dropout=0.0)
+    z_src = torch.randn(3, 4)
+    z_dst = torch.randn(3, 4)
+
+    out = model(z_src, z_dst)
+
+    assert out.shape == (3,)
+    assert out.dtype == z_src.dtype
+'''
+
+    def _train_one_config_template(self, module_path):
+        return f'''"""Semantic tests generated by SoftGNN M3."""
+
+import json
+from pathlib import Path
+from unittest.mock import Mock
+
+import torch
+
+import {module_path} as train_model
+
+
+class _TinyTrainData:
+    def __init__(self):
+        self.metadata_called = False
+
+    def metadata(self):
+        self.metadata_called = True
+        return (["user"], [])
+
+
+class _TinyModel(torch.nn.Module):
+    def __init__(self, hidden_dim, output_dim, data, dropout):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.data = data
+        self.dropout = dropout
+        self.weight = torch.nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, *args, **kwargs):
+        return self.weight.reshape(1)
+
+
+class _NoOpScheduler:
+    def __init__(self, *args, **kwargs):
+        self.step_calls = 0
+
+    def step(self):
+        self.step_calls += 1
+
+
+def test_train_one_config_uses_config_and_returns_training_contract(monkeypatch, tmp_path):
+    train_data = _TinyTrainData()
+    val_data = object()
+    test_data = object()
+    target_edge_types = [("user", "follows", "user")]
+    split_data = (train_data, val_data, test_data, target_edge_types)
+    config = {{
+        "hidden_dim": 4,
+        "lr": 0.01,
+        "epochs": 1,
+        "batch_size": 2,
+        "dropout": 0.25,
+    }}
+    created_models = []
+
+    def fake_model(hidden_dim, output_dim, data, dropout):
+        model = _TinyModel(hidden_dim, output_dim, data, dropout)
+        created_models.append(model)
+        return model
+
+    monkeypatch.setattr(train_model, "HGTLinkPrediction", fake_model)
+    monkeypatch.setattr(train_model, "train_epoch", lambda *args, **kwargs: 0.125)
+    monkeypatch.setattr(train_model, "evaluate", lambda *args, **kwargs: 0.75)
+    monkeypatch.setattr(train_model, "call_back", Mock())
+    monkeypatch.setattr(train_model.torch.optim.lr_scheduler, "CosineAnnealingWarmRestarts", _NoOpScheduler)
+    monkeypatch.setattr(train_model.torch.amp, "GradScaler", lambda *args, **kwargs: Mock())
+    monkeypatch.setattr(train_model.torch.cuda, "empty_cache", Mock())
+    monkeypatch.setattr(train_model.gc, "collect", Mock(return_value=0))
+    history_path = tmp_path / "history.json"
+    monkeypatch.setattr(train_model, "TRAINING_HISTORY_PATH", history_path)
+
+    best_val_auc, final_test_auc, best_model = train_model.train_one_config(
+        split_data,
+        config,
+        torch.device("cpu"),
+    )
+
+    assert best_val_auc == 0.75
+    assert final_test_auc == 1.0
+    assert best_model is created_models[0]
+    assert created_models[0].hidden_dim == config["hidden_dim"]
+    assert created_models[0].dropout == config["dropout"]
+    assert history_path.exists()
+    history = json.loads(Path(history_path).read_text(encoding="utf-8"))
+    assert history["epoch"] == [1]
+    assert history["loss"] == [0.125]
+    assert history["val_auc"] == [0.75]
+    train_model.call_back.assert_called_once_with(created_models[0])
+'''
+
+    def _fallback_semantic_template(self, target, context, test_name):
+        module_path = context['module_path']
+        qualname = target.node_id.replace('FUNC:', '')
+        parts = qualname.split('.')
+        if len(parts) >= 2:
+            class_name, method_name = parts[-2], parts[-1]
+            return f'''"""Semantic smoke tests generated by SoftGNN M3."""
+
+from {module_path} import {class_name}
+
+
+def {test_name}():
+    assert hasattr({class_name}, "{method_name}")
+'''
+        fn_name = parts[-1]
+        return f'''"""Semantic smoke tests generated by SoftGNN M3."""
+
+from {module_path} import {fn_name}
+
+
+def {test_name}():
+    assert callable({fn_name})
+'''
+
+    def _apply_plans(self, plans, warnings):
+        written = []
+        for plan in plans:
+            rel_path = plan.test_file.replace('\\', '/')
+            if not rel_path.startswith('tests/'):
+                rel_path = 'tests/' + os.path.basename(rel_path)
+            abs_path = os.path.join(self.repo_path, rel_path.replace('/', os.sep))
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            marked_code = self._wrap_generated_block(plan)
+            if os.path.exists(abs_path):
+                existing = self._read_text(abs_path)
+                duplicate_names = [name for name in self._test_function_names(plan.code) if f'def {name}(' in existing]
+                if duplicate_names:
+                    warnings.append(f'Skipped {rel_path}; generated test(s) already exist: {", ".join(duplicate_names)}.')
+                    continue
+                content = existing.rstrip() + '\n\n\n' + marked_code
+            else:
+                content = marked_code
+            Path(abs_path).write_text(content, encoding='utf-8')
+            written.append(rel_path)
+        return sorted(set(written))
+
+    def _snapshot_plans(self, plans):
+        snapshots = {}
+        for plan in plans:
+            rel_path = plan.test_file.replace('\\', '/')
+            if not rel_path.startswith('tests/'):
+                rel_path = 'tests/' + os.path.basename(rel_path)
+            abs_path = os.path.join(self.repo_path, rel_path.replace('/', os.sep))
+            snapshots[abs_path] = self._read_text(abs_path) if os.path.exists(abs_path) else None
+        return snapshots
+
+    def _rollback_snapshots(self, snapshots):
+        for abs_path, content in snapshots.items():
+            if content is None:
+                if os.path.exists(abs_path):
+                    os.remove(abs_path)
+            else:
+                Path(abs_path).write_text(content, encoding='utf-8')
+
+    def _wrap_generated_block(self, plan):
+        return (
+            f'# <softgnn-generated target="{plan.target_id}" start>\n'
+            f'{plan.code.rstrip()}\n'
+            f'# <softgnn-generated target="{plan.target_id}" end>\n'
+        )
+
+    def _pytest_targets(self, files_written, pytest_args):
+        if pytest_args:
+            if isinstance(pytest_args, (list, tuple)):
+                return list(pytest_args)
+            return str(pytest_args).split()
+        return files_written
+
+    def _parse_pytest_failures(self, output):
+        failures = []
+        current = None
+        blocks = re.split(r'\n_{5,}\s+', output or '')
+        for block in blocks:
+            header_match = re.search(r'(test_[a-zA-Z0-9_]+)', block)
+            if not header_match:
+                continue
+            error_match = re.search(r'\b(E|FAILED)\s+([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Failure)?)?:?\s*(.*)', block)
+            error_type = error_match.group(2) if error_match and error_match.group(2) else 'PytestFailure'
+            message = error_match.group(3).strip() if error_match else block.strip().splitlines()[-1]
+            current = PytestFailure(header_match.group(1), error_type, message, block[-2000:])
+            failures.append(current)
+        if not failures and output:
+            syntax = re.search(r'(SyntaxError|ImportError|ModuleNotFoundError|AttributeError|TypeError):\s*(.*)', output)
+            if syntax:
+                failures.append(PytestFailure('-', syntax.group(1), syntax.group(2), output[-2000:]))
+        return failures
+
+    def _repair_generated_tests(self, plans, pytest_output, warnings, generation_strategy='template', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096):
+        if generation_strategy in ('llm', 'auto') and getattr(self.llm_provider, 'available', False):
+            action = self._try_llm_repair(plans, pytest_output, warnings, llm_required, llm_temperature, llm_max_tokens)
+            if action != 'no-op':
+                return action
+        # Heuristic repair v1. Conservative by design: only generated test files are touched.
+        actions = []
+        if 'SyntaxError' in pytest_output:
+            for plan in plans:
+                if '\ndef\n' in plan.code or re.search(r'\ndef\s+\n\s*test_', plan.code):
+                    plan.code = re.sub(r'\ndef\s+\n\s*(test_)', r'\ndef \1', plan.code)
+                    actions.append('normalized malformed function definition')
+        if 'GradScaler' in pytest_output and "GradScaler" in ''.join(p.code for p in plans):
+            actions.append('kept CPU-safe GradScaler mock')
+        if not actions:
+            warnings.append('No heuristic repair matched pytest failure.')
+            return 'no-op'
+        self._rewrite_generated_blocks(plans)
+        return '; '.join(sorted(set(actions)))
+
+    def _try_llm_repair(self, plans, pytest_output, warnings, llm_required, llm_temperature, llm_max_tokens):
+        if not plans:
+            return 'no-op'
+        plan = plans[0]
+        request = LLMRequest(
+            system_prompt=self._llm_repair_system_prompt(),
+            user_prompt=self._llm_repair_user_prompt(plan, pytest_output),
+            temperature=llm_temperature,
+            max_tokens=llm_max_tokens,
+        )
+        try:
+            response = self.llm_provider.complete(request)
+            fixed_code, explanation = parse_repair_response(response.text)
+            plan.code = fixed_code
+            plan.test_names = self._test_function_names(fixed_code)
+            self._rewrite_generated_blocks([plan])
+            return f'LLM repair: {explanation}'
+        except Exception as exc:
+            message = f'LLM repair failed; falling back to heuristic repair: {exc}'
+            if llm_required:
+                raise RuntimeError(message) from exc
+            warnings.append(message)
+            return 'no-op'
+
+    def _llm_repair_system_prompt(self):
+        return """You repair generated pytest code. Return exactly one JSON object and no markdown. Replace only the generated test block. Keep tests deterministic, CPU-safe, and under pytest. Do not use subprocess, network, os.system, requests, urllib, socket, or destructive filesystem operations."""
+
+    def _llm_repair_user_prompt(self, plan, pytest_output):
+        return f"""
+Return JSON:
+{{
+  "action": "replace_generated_block",
+  "code": "fixed pytest code as a string",
+  "explanation": "what changed"
+}}
+
+Target: {plan.target_id}
+Test file: {plan.test_file}
+Current generated code:
+```python
+{plan.code[-6000:]}
+```
+
+Pytest output:
+```text
+{pytest_output[-6000:]}
+```
+
+Constraints:
+- Keep all code as pytest test code only.
+- Preserve or improve semantic assertions.
+- Do not touch production code.
+- Return JSON only.
+""".strip()
+
+    def _rewrite_generated_blocks(self, plans):
+        for plan in plans:
+            rel_path = plan.test_file.replace('\\', '/')
+            if not rel_path.startswith('tests/'):
+                rel_path = 'tests/' + os.path.basename(rel_path)
+            abs_path = os.path.join(self.repo_path, rel_path.replace('/', os.sep))
+            if not os.path.exists(abs_path):
+                continue
+            content = self._read_text(abs_path)
+            pattern = re.compile(
+                rf'# <softgnn-generated target="{re.escape(plan.target_id)}" start>.*?# <softgnn-generated target="{re.escape(plan.target_id)}" end>\n?',
+                flags=re.DOTALL,
+            )
+            replacement = self._wrap_generated_block(plan)
+            if pattern.search(content):
+                content = pattern.sub(replacement, content)
+            else:
+                content = content.rstrip() + '\n\n\n' + replacement
+            Path(abs_path).write_text(content, encoding='utf-8')
+
+    def _run_pytest(self, files):
+        cmd = [sys.executable, '-m', 'pytest', '-q'] + files
+        proc = subprocess.run(cmd, cwd=self.repo_path, capture_output=True, text=True, encoding='utf-8', errors='replace')
+        return proc.returncode, (proc.stdout or '') + (proc.stderr or '')
+
+    def render_markdown(self, result):
+        lines = [f'# Generated Test Plan — {self.project}', '', f'Mode: `{result.mode}`', '']
+        if result.warnings:
+            lines += ['## Warnings', ''] + [f'- {w}' for w in result.warnings] + ['']
+        lines += ['## Selected Targets', '']
+        if not result.targets:
+            lines.append('No missing coverage function targets were selected.')
+        for target in result.targets:
+            lines += [
+                f'### `{target.node_id}`',
+                '',
+                f'- Source: `{target.source_file}`',
+                f'- Priority: `{target.priority:.1f}`',
+                f'- Reason: {target.reason}',
+                f'- Evidence: {"; ".join(target.evidence) if target.evidence else "-"}',
+                '',
+            ]
+        lines += ['## Proposed Tests', '']
+        for plan in result.plans:
+            lines += [
+                f'### `{plan.test_file}` for `{plan.target_id}`',
+                '',
+                plan.rationale,
+                '',
+                'Assumptions:',
+                *[f'- {a}' for a in plan.assumptions],
+                '',
+                f'```python\n{plan.code}```',
+                '',
+            ]
+        if result.files_written:
+            lines += ['## Files Written', ''] + [f'- `{f}`' for f in result.files_written] + ['']
+        if result.rolled_back:
+            lines += ['## Rollback', '', 'Generated edits were rolled back because verification failed.', '']
+        if result.pytest_returncode is not None:
+            lines += ['## Pytest Verification', '', f'Return code: `{result.pytest_returncode}`', '', '```text', result.pytest_output[-4000:], '```', '']
+        if result.failures:
+            lines += ['## Parsed Failures', '']
+            for failure in result.failures:
+                lines += [f'- `{failure.test_name}` `{failure.error_type}`: {failure.message}', '']
+        if result.repair_attempts:
+            lines += ['## Repair Attempts', '']
+            for attempt in result.repair_attempts:
+                lines += [f'- Iteration {attempt.iteration}: {attempt.action} -> return code `{attempt.pytest_returncode}`']
+            lines.append('')
+        if result.runtime_result is not None:
+            lines += [
+                '## Runtime Refresh',
+                '',
+                f'- Mode used: `{result.runtime_result.mode_used}`',
+                f'- Discovered tests: `{len(result.runtime_result.discovered_tests)}`',
+                f'- Runtime edges: `{len(result.runtime_result.runtime_edges)}`',
+                f'- Persisted: `{result.runtime_result.persisted}`',
+                '',
+            ]
+        if result.post_missing_coverage_count is not None:
+            lines += [
+                '## PR Scan Confirmation',
+                '',
+                f'- Missing coverage before: `{result.pre_missing_coverage_count}`',
+                f'- Missing coverage after: `{result.post_missing_coverage_count}`',
+                '',
+            ]
+        return '\n'.join(lines)
+
+    def _suggest_test_file(self, source_file):
+        base = os.path.splitext(os.path.basename(source_file))[0]
+        return f'tests/test_{base}.py'
+
+    def _module_path(self, source_file):
+        return source_file[:-3].replace('/', '.').replace('\\', '.') if source_file.endswith('.py') else source_file.replace('/', '.')
+
+    def _safe_name(self, value):
+        return re.sub(r'[^a-zA-Z0-9_]+', '_', value).strip('_').lower()
+
+    def _read_text(self, path):
+        try:
+            return Path(path).read_text(encoding='utf-8')
+        except Exception:
+            return ''
+
+    def _extract_imports(self, source):
+        return [line for line in source.splitlines() if line.startswith(('import ', 'from '))]
+
+    def _slice_source(self, lines, node):
+        start = max(getattr(node, 'lineno', 1) - 1, 0)
+        end = getattr(node, 'end_lineno', getattr(node, 'lineno', 1))
+        return '\n'.join(lines[start:end])
+
+    def _test_function_names(self, code):
+        return re.findall(r'^def (test_[a-zA-Z0-9_]+)\(', code, flags=re.MULTILINE)
+
+    def _signature(self, node):
+        args = [arg.arg for arg in node.args.args]
+        if node.args.vararg:
+            args.append('*' + node.args.vararg.arg)
+        if node.args.kwarg:
+            args.append('**' + node.args.kwarg.arg)
+        return f"{node.name}({', '.join(args)})"

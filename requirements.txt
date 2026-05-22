@@ -1,0 +1,19 @@
+networkx>=3.0
+pandas
+numpy
+
+# PyTorch
+torch
+torch-geometric
+sentence-transformers
+scikit-learn
+
+# Utils & CLI
+thefuzz
+python-Levenshtein
+unidecode
+tqdm
+igraph
+gitpython
+rich
+click
