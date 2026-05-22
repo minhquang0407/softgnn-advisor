@@ -51,27 +51,63 @@ $env:SOFTGNN_LLM_MODEL="qwen2.5-coder:7b"
 No LLM? Use templates:
 
 ```powershell
-python softgnn.py plan C:\repo\my-app --strategy template
+python softgnn.py apply C:\repo\my-app --strategy template
 ```
 
 ---
 
-## 3. 60-second workflow
+## 3. Quickstart — one command after setup
+
+After setup, **a single command is all you need:**
 
 ```powershell
 python softgnn.py setup C:\repo\my-app
-python softgnn.py scan C:\repo\my-app
-python softgnn.py plan C:\repo\my-app
 python softgnn.py apply C:\repo\my-app
 ```
 
-What happens:
+`apply` runs the complete workflow automatically:
 
 ```text
-setup = build graph + save filesystem snapshot, no training by default
-scan  = PR/synthetic scan, no LLM, no writes
-plan  = scan + generate proposed tests + save plan bundle
-apply = reuse saved plan if valid, patch tests, run pytest, map runtime, confirm scan
+detect changes (git diff / filesystem snapshot / full-scan)
+run pr-scan
+rank missing coverage targets
+generate proposed tests (LLM/template)
+patch test files
+run pytest
+repair if failing
+rollback if still failing
+run runtime map
+run post-scan confirmation
+```
+
+Nothing is modified unless pytest passes.
+
+---
+
+## 4. Optional: plan first, apply second
+
+If you want to **review proposed tests before patching**, use `plan` first:
+
+```powershell
+python softgnn.py setup C:\repo\my-app
+python softgnn.py plan C:\repo\my-app
+```
+
+Inspect the output, then apply the reviewed plan:
+
+```powershell
+python softgnn.py apply C:\repo\my-app
+```
+
+`apply` reuses the saved plan — it skips pre-scan and LLM generation and patches exactly what you reviewed. If the source has changed since planning, it warns and falls back to fresh generation.
+
+Full optional workflow:
+
+```powershell
+python softgnn.py setup C:\repo\my-app
+python softgnn.py scan C:\repo\my-app   # inspect only, no LLM, no writes
+python softgnn.py plan C:\repo\my-app   # generate + review + save plan
+python softgnn.py apply C:\repo\my-app  # apply reviewed plan
 ```
 
 The project name defaults to the repo folder name. Override it with:
@@ -80,9 +116,8 @@ The project name defaults to the repo folder name. Override it with:
 python softgnn.py setup C:\repo\my-app --project custom-name
 ```
 
----
 
-## 4. Simple commands
+## 5. Simple commands
 
 ### `setup`
 

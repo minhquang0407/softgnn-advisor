@@ -182,28 +182,42 @@ auto      -> try LLM first, fallback to templates when unavailable
 
 ## Quickstart
 
-60-second beginner workflow:
+After setup, a single command runs the full workflow:
 
 ```powershell
 python softgnn.py setup C:\repo\my-app
-python softgnn.py scan C:\repo\my-app
-python softgnn.py plan C:\repo\my-app
 python softgnn.py apply C:\repo\my-app
 ```
 
-What each command does:
+`apply` does everything automatically:
 
 ```text
-setup = build graph + save filesystem snapshot, no training by default
-scan  = PR/synthetic scan, no LLM, no writes
-plan  = scan + generate proposed tests + save reviewed plan bundle
-apply = reuse valid saved plan, patch tests, run pytest, map runtime, confirm scan
+detect changes (git / filesystem snapshot / full-scan)
+run pr-scan
+rank missing coverage targets
+generate tests (LLM or template)
+patch test files
+run pytest
+repair if failing
+rollback if still failing
+run runtime map
+run post-scan confirmation
 ```
 
-Template-only plan with no LLM:
+Nothing is modified unless pytest passes.
+
+Want to review proposed tests before patching? Use `plan` first:
 
 ```powershell
-python softgnn.py plan C:\repo\my-app --strategy template
+python softgnn.py setup C:\repo\my-app
+python softgnn.py plan C:\repo\my-app   # review output
+python softgnn.py apply C:\repo\my-app  # apply reviewed plan
+```
+
+Template-only generation (no LLM):
+
+```powershell
+python softgnn.py apply C:\repo\my-app --strategy template
 ```
 
 Advanced commands are still available (`prepare`, `pr-scan`, `generate-tests`, `test-map`).
