@@ -219,6 +219,17 @@ python softgnn.py generate-tests `
 
 More details: [docs/quickstart.md](docs/quickstart.md)
 
+The full guide covers:
+
+```text
+Git PR workflow
+no-Git filesystem snapshot workflow
+first-run full-scan workflow
+explicit target workflow
+runtime coverage mapping
+patch/verify/repair/rollback flow
+```
+
 ---
 
 ## Safety model
