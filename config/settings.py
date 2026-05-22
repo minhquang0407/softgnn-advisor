@@ -30,6 +30,8 @@ def get_project_paths(project_name: str) -> dict:
         "TEST_COVERAGE_EDGES_PATH": project_dir / "test_coverage_edges.json",
         "RUNTIME_TEST_COVERAGE_EDGES_PATH": project_dir / "runtime_test_coverage_edges.json",
         "FILESYSTEM_SNAPSHOT_PATH": project_dir / "filesystem_snapshot.json",
+        "PLANS_DIR": project_dir / "plans",
+        "LATEST_PLAN_PATH": project_dir / "plans" / "latest_plan.json",
         "COVERAGE_WORK_DIR": project_dir / "coverage",
     }
 

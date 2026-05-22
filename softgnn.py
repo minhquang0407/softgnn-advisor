@@ -1042,5 +1042,202 @@ def doctor(project):
     console.rule("[bold cyan]Doctor Complete")
 
 
+def _default_project_name(repo_path):
+    return os.path.basename(os.path.abspath(repo_path).rstrip(os.sep)) or 'default'
+
+
+def _render_generation(agent, result):
+    markdown = agent.render_markdown(result)
+    console.print(markdown)
+    if result.files_written:
+        console.print(f"[bold green]Wrote {len(result.files_written)} test file(s).[/bold green]")
+    return markdown
+
+
+@cli.command('setup')
+@click.argument('repo_path')
+@click.option('--project', default=None, help='Project name; defaults to repository folder name')
+@click.option('--train/--no-train', default=False, show_default=True, help='Run experimental HGT training after graph build')
+def simple_setup(repo_path, project, train):
+    """Beginner setup: build graph and filesystem snapshot."""
+    project = project or _default_project_name(repo_path)
+    console.rule(f"[bold cyan]SoftGNN Setup - Project: {project}")
+    from scripts.etl_run import run_etl_pipeline
+    from scripts.train_model import run_optimization
+    from core.change_provider import build_filesystem_snapshot, save_filesystem_snapshot, snapshot_path_for_project
+
+    run_etl_pipeline(repo_path, project)
+    snapshot = build_filesystem_snapshot(repo_path)
+    save_filesystem_snapshot(snapshot_path_for_project(project), snapshot)
+    console.print("[bold green]Graph and filesystem snapshot saved.[/bold green]")
+    if train:
+        run_optimization(project)
+        console.print("[bold green]Training completed.[/bold green]")
+    else:
+        console.print("[yellow]Training skipped. Use --train if you want experimental GNN ranking.[/yellow]")
+
+
+@cli.command('scan')
+@click.argument('repo_path')
+@click.option('--project', default=None, help='Project name; defaults to repository folder name')
+@click.option('--base', default='main', show_default=True)
+@click.option('--head', default='HEAD', show_default=True)
+@click.option('--source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True)
+@click.option('--mode', type=click.Choice(['deterministic', 'hybrid', 'gnn']), default='hybrid', show_default=True)
+@click.option('--max-impact', default=30, show_default=True)
+def simple_scan(repo_path, project, base, head, source, mode, max_impact):
+    """Beginner scan: detect changes and suggest coverage targets without LLM calls."""
+    project = project or _default_project_name(repo_path)
+    console.print("[cyan]LLM: not used | Writes: none | Pytest: not run[/cyan]")
+    from core.pr_scanner import PRScanner
+    scanner = PRScanner(project, repo_path=repo_path)
+    result = scanner.scan(base=base, head=head, mode=mode, max_impact=max_impact, change_source=source)
+    for warning in result.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+    summary = Table(title="Scan Summary")
+    summary.add_column("Metric", style="cyan")
+    summary.add_column("Value", style="green")
+    summary.add_row("Project", project)
+    summary.add_row("Change source", result.change_source)
+    summary.add_row("Changed files", str(len(result.changed_files)))
+    summary.add_row("Changed nodes", str(len(result.changed_nodes)))
+    summary.add_row("Missing coverage", str(len(result.missing_coverage)))
+    summary.add_row("Suggested tests", str(len(result.suggested_tests)))
+    console.print(summary)
+
+
+@cli.command('plan')
+@click.argument('repo_path')
+@click.option('--project', default=None, help='Project name; defaults to repository folder name')
+@click.option('--base', default='main', show_default=True)
+@click.option('--head', default='HEAD', show_default=True)
+@click.option('--target', default=None, help='Target id, e.g. FUNC:foo')
+@click.option('--file', 'source_file', default=None, help='Source file for explicit target')
+@click.option('--max-targets', default=3, show_default=True)
+@click.option('--strategy', type=click.Choice(['template', 'llm', 'auto']), default='auto', show_default=True)
+@click.option('--source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True)
+@click.option('--llm-required/--llm-fallback', default=False, show_default=True)
+@click.option('--save-plan/--no-save-plan', default=True, show_default=True)
+def simple_plan(repo_path, project, base, head, target, source_file, max_targets, strategy, source, llm_required, save_plan):
+    """Beginner plan: scan, generate proposed tests, and save a reusable plan bundle."""
+    project = project or _default_project_name(repo_path)
+    console.print("[cyan]LLM: strategy-dependent | Writes: plan cache only | Pytest: not run[/cyan]")
+    from core.test_generation_agent import TestGenerationAgent
+    from core.plan_cache import save_plan_bundle
+    agent = TestGenerationAgent(project, repo_path=repo_path)
+    result = agent.generate(
+        base=base,
+        head=head,
+        mode='plan',
+        max_targets=max_targets,
+        target_id=target,
+        source_file=source_file,
+        refresh_runtime=False,
+        generation_strategy=strategy,
+        llm_required=llm_required,
+        change_source=source,
+    )
+    _render_generation(agent, result)
+    if save_plan and result.plans:
+        plan_path, latest_path, _ = save_plan_bundle(project, result, repo_path, base=base, head=head, change_source=source, llm_config=agent.llm_config)
+        console.print(f"[bold green]Plan saved:[/bold green] {plan_path}")
+        console.print(f"[bold green]Latest plan:[/bold green] {latest_path}")
+        console.print(f"Next: [cyan]python softgnn.py apply {repo_path}[/cyan]")
+
+
+@cli.command('apply')
+@click.argument('repo_path')
+@click.option('--project', default=None, help='Project name; defaults to repository folder name')
+@click.option('--base', default='main', show_default=True)
+@click.option('--head', default='HEAD', show_default=True)
+@click.option('--plan', 'plan_ref', default=None, help='Plan id or path; defaults to latest saved plan')
+@click.option('--ignore-plan', is_flag=True, help='Generate fresh instead of using a saved plan')
+@click.option('--force-stale-plan', is_flag=True, help='Apply saved plan even if source files changed')
+@click.option('--target', default=None, help='Target id for fresh generation')
+@click.option('--file', 'source_file', default=None, help='Source file for explicit target')
+@click.option('--max-targets', default=3, show_default=True)
+@click.option('--strategy', type=click.Choice(['template', 'llm', 'auto']), default='auto', show_default=True)
+@click.option('--source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True)
+@click.option('--repair', default=2, show_default=True)
+@click.option('--pytest', 'pytest_args', default=None, help='Override pytest args')
+@click.option('--keep-failing-tests/--rollback-failing-tests', default=False, show_default=True)
+def simple_apply(repo_path, project, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, source, repair, pytest_args, keep_failing_tests):
+    """Beginner apply: reuse reviewed plan when valid, then patch, verify, map runtime, and confirm."""
+    project = project or _default_project_name(repo_path)
+    console.print("[cyan]Writes: tests only | Pytest: yes | Runtime map: yes[/cyan]")
+    from core.test_generation_agent import TestGenerationAgent
+    from core.plan_cache import bundle_to_generation_plans, load_plan_bundle, validate_plan_bundle
+    agent = TestGenerationAgent(project, repo_path=repo_path)
+    if not ignore_plan:
+        try:
+            bundle, loaded_path = load_plan_bundle(project, plan_ref)
+            validation = validate_plan_bundle(bundle, repo_path)
+            if validation.valid or force_stale_plan:
+                if not validation.valid:
+                    for warning in validation.warnings:
+                        console.print(f"[yellow]{warning}[/yellow]")
+                    console.print("[yellow]Applying stale plan because --force-stale-plan was set.[/yellow]")
+                plans = bundle_to_generation_plans(bundle)
+                console.print(f"[bold green]Loaded saved plan:[/bold green] {loaded_path}")
+                console.print("[cyan]Skipping pre-scan and LLM generation.[/cyan]")
+                result = agent.apply_saved_plans(
+                    plans,
+                    base=base,
+                    head=head,
+                    verify=True,
+                    repair_iters=repair,
+                    refresh_runtime=True,
+                    runtime_mode='per-test',
+                    confirm_pr_scan=True,
+                    keep_failing_tests=keep_failing_tests,
+                    pytest_args=pytest_args,
+                    generation_strategy=strategy,
+                    change_source=source,
+                )
+                _render_generation(agent, result)
+                return
+            for warning in validation.warnings:
+                console.print(f"[yellow]{warning}[/yellow]")
+            console.print("[yellow]Saved plan is stale. Re-run plan or use --force-stale-plan. Generating fresh apply flow instead.[/yellow]")
+        except FileNotFoundError:
+            console.print("[yellow]No saved plan found. Generating fresh apply flow.[/yellow]")
+    result = agent.generate(
+        base=base,
+        head=head,
+        mode='patch',
+        max_targets=max_targets,
+        target_id=target,
+        source_file=source_file,
+        verify=True,
+        repair_iters=repair,
+        refresh_runtime=True,
+        runtime_mode='per-test',
+        confirm_pr_scan=True,
+        keep_failing_tests=keep_failing_tests,
+        pytest_args=pytest_args,
+        generation_strategy=strategy,
+        change_source=source,
+    )
+    _render_generation(agent, result)
+
+
+@cli.command('map')
+@click.argument('repo_path')
+@click.option('--project', default=None, help='Project name; defaults to repository folder name')
+@click.option('--pytest', 'pytest_args', default='tests', show_default=True)
+@click.option('--mode', type=click.Choice(['auto', 'dynamic-context', 'per-test']), default='per-test', show_default=True)
+@click.option('--persist/--no-persist', default=True, show_default=True)
+@click.option('--max-tests', default=None, type=int)
+def simple_map(repo_path, project, pytest_args, mode, persist, max_tests):
+    """Beginner map: run pytest runtime coverage mapping."""
+    project = project or _default_project_name(repo_path)
+    from infrastructure.pipelines.runtime_coverage_mapper import RuntimeCoverageMapper
+    mapper = RuntimeCoverageMapper(project, repo_path=repo_path)
+    result = mapper.map_runtime_coverage(pytest_args=pytest_args, mode=mode, persist=persist, max_tests=max_tests)
+    for warning in result.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+    console.print(f"[bold green]Runtime edges:[/bold green] {len(result.runtime_edges)} | Persisted: {result.persisted}")
+
+
 if __name__ == '__main__':
     cli()

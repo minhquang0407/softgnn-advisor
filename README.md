@@ -182,46 +182,39 @@ auto      -> try LLM first, fallback to templates when unavailable
 
 ## Quickstart
 
-Start with plan mode. This does not modify files:
+60-second beginner workflow:
 
 ```powershell
-python softgnn.py generate-tests `
-  --project social-link `
-  --repo-path "C:\path\to\your\repo" `
-  --base main `
-  --head HEAD `
-  --mode plan `
-  --target-id "FUNC:is_edge_index_sorted" `
-  --source-file "scripts/train_model.py" `
-  --generation-strategy auto `
-  --llm-required `
-  --no-refresh-runtime
+python softgnn.py setup C:\repo\my-app
+python softgnn.py scan C:\repo\my-app
+python softgnn.py plan C:\repo\my-app
+python softgnn.py apply C:\repo\my-app
 ```
 
-Then patch and verify:
+What each command does:
+
+```text
+setup = build graph + save filesystem snapshot, no training by default
+scan  = PR/synthetic scan, no LLM, no writes
+plan  = scan + generate proposed tests + save reviewed plan bundle
+apply = reuse valid saved plan, patch tests, run pytest, map runtime, confirm scan
+```
+
+Template-only plan with no LLM:
 
 ```powershell
-python softgnn.py generate-tests `
-  --project social-link `
-  --repo-path "C:\path\to\your\repo" `
-  --base main `
-  --head HEAD `
-  --mode patch `
-  --target-id "FUNC:is_edge_index_sorted" `
-  --source-file "scripts/train_model.py" `
-  --generation-strategy auto `
-  --llm-required `
-  --verify `
-  --repair-iters 2 `
-  --runtime-mode per-test `
-  --confirm-pr-scan
+python softgnn.py plan C:\repo\my-app --strategy template
 ```
+
+Advanced commands are still available (`prepare`, `pr-scan`, `generate-tests`, `test-map`).
 
 More details: [docs/quickstart.md](docs/quickstart.md)
 
 The full guide covers:
 
 ```text
+simple CLI workflow
+plan cache and apply-from-plan
 Git PR workflow
 no-Git filesystem snapshot workflow
 first-run full-scan workflow

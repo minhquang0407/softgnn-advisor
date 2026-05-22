@@ -546,6 +546,46 @@ def {test_name}():
     assert callable({fn_name})
 '''
 
+    def apply_saved_plans(self, plans, base='main', head='HEAD', verify=True, repair_iters=2, refresh_runtime=True, runtime_mode='per-test', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto'):
+        warnings = []
+        files_written = []
+        pytest_returncode = None
+        pytest_output = ''
+        failures = []
+        repair_attempts = []
+        rolled_back = False
+        runtime_result = None
+        post_scan = None
+        post_missing_count = None
+        snapshots = self._snapshot_plans(plans)
+        files_written = self._apply_plans(plans, warnings)
+        if verify and files_written:
+            pytest_files = self._pytest_targets(files_written, pytest_args)
+            pytest_returncode, pytest_output = self._run_pytest(pytest_files)
+            failures = self._parse_pytest_failures(pytest_output) if pytest_returncode else []
+            remaining_repairs = max(0, int(repair_iters or 0))
+            iteration = 0
+            while pytest_returncode and remaining_repairs > 0:
+                iteration += 1
+                action = self._repair_generated_tests(plans, pytest_output, warnings, generation_strategy, llm_required, llm_temperature, llm_max_tokens)
+                pytest_returncode, pytest_output = self._run_pytest(pytest_files)
+                repair_attempts.append(RepairAttempt(iteration, action, pytest_returncode, pytest_output))
+                failures = self._parse_pytest_failures(pytest_output) if pytest_returncode else []
+                remaining_repairs -= 1
+                if action == 'no-op':
+                    break
+            if pytest_returncode and not keep_failing_tests:
+                self._rollback_snapshots(snapshots)
+                rolled_back = True
+                warnings.append('Rolled back generated tests because pytest failed and --keep-failing-tests was not set.')
+                files_written = []
+            elif pytest_returncode == 0 and refresh_runtime:
+                runtime_result = RuntimeCoverageMapper(self.project, repo_path=self.repo_path).map_runtime_coverage(pytest_args=pytest_args or 'tests', mode=runtime_mode, persist=True)
+                if confirm_pr_scan:
+                    post_scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True, change_source=change_source)
+                    post_missing_count = len(post_scan.missing_coverage)
+        return TestGenerationResult([], plans, files_written, pytest_returncode, pytest_output, warnings, 'patch', failures, repair_attempts, rolled_back, runtime_result, post_scan, 0, post_missing_count)
+
     def _apply_plans(self, plans, warnings):
         written = []
         for plan in plans:

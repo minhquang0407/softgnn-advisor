@@ -1,40 +1,8 @@
 # End-to-End Usage Guide
 
-This guide shows how to use SoftGNN Advisor from a fresh clone to graph build, PR scan, no-Git synthetic scan, test generation, runtime mapping, and verification.
+SoftGNN Advisor is graph-guided, runtime-aware, LLM-assisted test generation for Python projects.
 
-SoftGNN is currently an alpha/developer preview. Start with `plan` mode, inspect output, then use `patch` mode on a feature branch.
-
----
-
-## 0. Mental model
-
-SoftGNN is not only an LLM test writer.
-
-```text
-code graph + runtime test graph + change detection + LLM generation + pytest verification
-```
-
-The core loop:
-
-```text
-prepare project
-  -> detect changes
-  -> map changed files to graph nodes
-  -> find missing runtime/static coverage
-  -> generate tests
-  -> verify with pytest
-  -> refresh runtime coverage
-  -> confirm coverage again
-```
-
-Change detection can come from:
-
-```text
-git          normal PR/diff mode
-filesystem   snapshot diff for no-Git projects
-full-scan    first-run or entire-project scan
-auto         choose best available source
-```
+This guide starts with the simple CLI and then shows the advanced commands underneath.
 
 ---
 
@@ -58,13 +26,11 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> PyTorch/PyG can be platform-specific. If install fails, install PyTorch and PyTorch Geometric using their official commands for your platform, then rerun `pip install -r requirements.txt`.
-
 ---
 
-## 2. Configure an LLM provider
+## 2. Optional: configure an LLM
 
-SoftGNN can run with templates, but LLM mode produces better semantic tests.
+`scan` never calls an LLM. `plan` and `apply` may call an LLM depending on strategy.
 
 ### Gemini
 
@@ -74,411 +40,328 @@ $env:SOFTGNN_LLM_MODEL="gemini-3-flash"
 $env:SOFTGNN_LLM_API_KEY="YOUR_GEMINI_API_KEY"
 ```
 
-If your account uses another model ID:
-
-```powershell
-$env:SOFTGNN_LLM_MODEL="gemini-2.5-flash"
-```
-
 ### OpenAI-compatible endpoint
 
 ```powershell
 $env:SOFTGNN_LLM_PROVIDER="openai-compatible"
 $env:SOFTGNN_LLM_BASE_URL="http://localhost:11434/v1"
 $env:SOFTGNN_LLM_MODEL="qwen2.5-coder:7b"
-$env:SOFTGNN_LLM_API_KEY="optional-if-your-endpoint-needs-it"
 ```
 
-### Generation strategies
+No LLM? Use templates:
 
-```text
-template  deterministic templates only
-llm       require an LLM unless fallback is allowed
-auto      try LLM first, fallback to templates
+```powershell
+python softgnn.py plan C:\repo\my-app --strategy template
 ```
 
 ---
 
-## 3. Prepare a project
-
-SoftGNN stores project-specific graph data under:
-
-```text
-data_output/<project>/
-```
-
-### Recommended first-run onboarding
-
-Use `--skip-train` first. It builds graph data and a filesystem snapshot without training the HGT model.
+## 3. 60-second workflow
 
 ```powershell
-python softgnn.py prepare `
-  --project my-app `
-  --path "C:\path\to\my-app" `
-  --skip-train
+python softgnn.py setup C:\repo\my-app
+python softgnn.py scan C:\repo\my-app
+python softgnn.py plan C:\repo\my-app
+python softgnn.py apply C:\repo\my-app
 ```
 
-This does:
+What happens:
 
 ```text
-parse Python source
-extract function contracts
-parse existing tests
-parse Git history if Git exists
-save graph/PyG data
+setup = build graph + save filesystem snapshot, no training by default
+scan  = PR/synthetic scan, no LLM, no writes
+plan  = scan + generate proposed tests + save plan bundle
+apply = reuse saved plan if valid, patch tests, run pytest, map runtime, confirm scan
+```
+
+The project name defaults to the repo folder name. Override it with:
+
+```powershell
+python softgnn.py setup C:\repo\my-app --project custom-name
+```
+
+---
+
+## 4. Simple commands
+
+### `setup`
+
+```powershell
+python softgnn.py setup C:\repo\my-app
+```
+
+Defaults:
+
+```text
+build graph/PyG data
+extract contracts
+parse tests
 save filesystem snapshot
-skip HGT training
+skip experimental HGT training
 ```
 
-### Full prepare with training
-
-If you want the experimental GNN ranking model:
+Train too:
 
 ```powershell
-python softgnn.py prepare `
-  --project my-app `
-  --path "C:\path\to\my-app" `
-  --with-train
-```
-
-You do **not** need to retrain every time a file changes. Normal workflows use change detection and graph context. Training can be done periodically.
-
----
-
-## 4. Scan changes in a Git project
-
-For a normal Git repo:
-
-```powershell
-python softgnn.py pr-scan `
-  --project my-app `
-  --repo-path "C:\path\to\my-app" `
-  --base main `
-  --head HEAD `
-  --change-source git
-```
-
-Auto mode is usually enough:
-
-```powershell
-python softgnn.py pr-scan `
-  --project my-app `
-  --repo-path "C:\path\to\my-app" `
-  --base main `
-  --head HEAD `
-  --change-source auto
-```
-
-Expected summary:
-
-```text
-Change source: git
-Changed files: N
-Changed graph nodes: N
-Missing coverage: N
-Suggested tests: N
+python softgnn.py setup C:\repo\my-app --train
 ```
 
 ---
 
-## 5. Scan a project without Git
-
-SoftGNN supports no-Git projects using filesystem snapshots.
-
-### First run without Git
+### `scan`
 
 ```powershell
-python softgnn.py prepare `
-  --project no-git-app `
-  --path "C:\path\to\no-git-app" `
-  --skip-train
+python softgnn.py scan C:\repo\my-app
 ```
 
-Then:
-
-```powershell
-python softgnn.py pr-scan `
-  --project no-git-app `
-  --repo-path "C:\path\to\no-git-app" `
-  --change-source auto
-```
-
-If no Git is detected, SoftGNN uses the filesystem snapshot fallback.
-
-### After adding or editing files
-
-If you add:
+Properties:
 
 ```text
-src/new_feature.py
+LLM: no
+Writes files: no
+Runs pytest: no
+Change source: auto
 ```
 
-Run:
+Force a source:
 
 ```powershell
-python softgnn.py pr-scan `
-  --project no-git-app `
-  --repo-path "C:\path\to\no-git-app" `
-  --change-source filesystem
+python softgnn.py scan C:\repo\my-app --source git
+python softgnn.py scan C:\repo\my-app --source filesystem
+python softgnn.py scan C:\repo\my-app --source full-scan
 ```
-
-SoftGNN treats snapshot changes like a synthetic PR:
-
-```text
-added    src/new_feature.py
-modified src/calculator.py
-deleted  src/old_feature.py
-```
-
-For a new Python file not yet in the graph, SoftGNN parses it incrementally and creates transient changed nodes for test planning.
 
 ---
 
-## 6. First-run full-scan mode
-
-Use full-scan when:
-
-```text
-project has no Git
-project has no previous snapshot
-you want to scan all Python files as candidate changes
-```
+### `plan`
 
 ```powershell
-python softgnn.py pr-scan `
-  --project my-app `
-  --repo-path "C:\path\to\my-app" `
-  --change-source full-scan
+python softgnn.py plan C:\repo\my-app
 ```
 
-Full-scan treats every Python file as added/changed. This is useful for onboarding, but for large repositories use a small `--max-impact` or explicit targets.
+Properties:
+
+```text
+runs scan first
+may call LLM depending on --strategy
+writes only plan cache
+does not patch repo files
+does not run pytest
+```
+
+Explicit target:
+
+```powershell
+python softgnn.py plan C:\repo\my-app --target FUNC:foo --file src/foo.py
+```
+
+Template-only, no LLM:
+
+```powershell
+python softgnn.py plan C:\repo\my-app --strategy template
+```
+
+Saved plan location:
+
+```text
+data_output/<project>/plans/latest_plan.json
+data_output/<project>/plans/<plan_id>.json
+```
 
 ---
 
-## 7. Generate tests in plan mode
+### `apply`
 
-Plan mode does not modify files.
+```powershell
+python softgnn.py apply C:\repo\my-app
+```
 
-### Explicit target
+Default behavior:
+
+```text
+load latest saved plan if available
+validate source hashes / git HEAD
+skip pre-scan and LLM generation when the plan is valid
+patch tests from the reviewed plan
+run pytest
+repair generated block if needed
+rollback if still failing
+run runtime map
+run post-scan confirmation
+```
+
+Force fresh generation instead of using saved plan:
+
+```powershell
+python softgnn.py apply C:\repo\my-app --ignore-plan
+```
+
+Apply a specific plan:
+
+```powershell
+python softgnn.py apply C:\repo\my-app --plan 20260522_180000
+```
+
+Apply a stale plan anyway:
+
+```powershell
+python softgnn.py apply C:\repo\my-app --force-stale-plan
+```
+
+---
+
+### `map`
+
+```powershell
+python softgnn.py map C:\repo\my-app
+```
+
+Defaults:
+
+```text
+pytest args: tests
+mode: per-test
+persist: true
+```
+
+Custom pytest args:
+
+```powershell
+python softgnn.py map C:\repo\my-app --pytest "tests/test_api.py -q"
+```
+
+---
+
+## 5. Git, no-Git, and full-scan
+
+SoftGNN change detection supports:
+
+```text
+auto        choose best available source
+git         Git diff mode
+filesystem  no-Git snapshot diff mode
+full-scan   treat all Python files as changed
+```
+
+### Normal Git project
+
+```powershell
+python softgnn.py setup C:\repo\my-app
+python softgnn.py scan C:\repo\my-app --source auto
+python softgnn.py plan C:\repo\my-app --source auto
+python softgnn.py apply C:\repo\my-app --source auto
+```
+
+### No-Git project
+
+```powershell
+python softgnn.py setup C:\repo\no-git-app
+python softgnn.py scan C:\repo\no-git-app --source filesystem
+python softgnn.py plan C:\repo\no-git-app --source filesystem
+```
+
+### First-run full scan
+
+```powershell
+python softgnn.py scan C:\repo\new-app --source full-scan
+python softgnn.py plan C:\repo\new-app --source full-scan --max-targets 3
+```
+
+---
+
+## 6. Advanced commands
+
+The simple commands are wrappers over advanced commands.
+
+| Simple | Advanced |
+|---|---|
+| `setup` | `prepare --skip-train` |
+| `scan` | `pr-scan --change-source auto` |
+| `plan` | `generate-tests --mode plan` + plan cache |
+| `apply` | `generate-tests --mode patch --verify --repair-iters 2 --confirm-pr-scan` |
+| `map` | `test-map --mode per-test --persist` |
+
+Advanced example:
 
 ```powershell
 python softgnn.py generate-tests `
   --project my-app `
-  --repo-path "C:\path\to\my-app" `
-  --mode plan `
-  --target-id "FUNC:is_edge_index_sorted" `
-  --source-file "scripts/train_model.py" `
-  --generation-strategy auto `
-  --change-source auto `
-  --no-refresh-runtime
-```
-
-### Auto target selection from changed files
-
-```powershell
-python softgnn.py generate-tests `
-  --project my-app `
-  --repo-path "C:\path\to\my-app" `
-  --base main `
-  --head HEAD `
-  --mode plan `
-  --max-targets 3 `
-  --generation-strategy auto `
-  --change-source auto `
-  --no-refresh-runtime
-```
-
-Without an LLM, you may see:
-
-```text
-LLM provider not configured; falling back to template generation.
-```
-
----
-
-## 8. Patch, verify, repair, and refresh runtime coverage
-
-Run patch mode only after reviewing the plan output.
-
-```powershell
-python softgnn.py generate-tests `
-  --project my-app `
-  --repo-path "C:\path\to\my-app" `
+  --repo-path C:\repo\my-app `
   --base main `
   --head HEAD `
   --mode patch `
-  --max-targets 3 `
   --generation-strategy auto `
+  --change-source auto `
   --verify `
   --repair-iters 2 `
   --runtime-mode per-test `
-  --confirm-pr-scan `
-  --change-source auto
-```
-
-Patch workflow:
-
-```text
-validate generated JSON
-validate safety constraints
-write tests under generated markers
-run pytest
-repair generated block if pytest fails
-rollback if still failing
-refresh runtime coverage when passing
-run PR scan confirmation again
-```
-
-Generated blocks look like:
-
-```python
-# <softgnn-generated target="FUNC:example" start>
-...
-# <softgnn-generated target="FUNC:example" end>
-```
-
-Inspect before commit:
-
-```powershell
-git diff
+  --confirm-pr-scan
 ```
 
 ---
 
-## 9. Map runtime coverage directly
-
-Runtime mapping records which tests actually execute which source functions.
-
-```powershell
-python softgnn.py test-map `
-  --project my-app `
-  --repo-path "C:\path\to\my-app" `
-  --pytest-args "tests" `
-  --mode per-test `
-  --persist
-```
-
-Expected output:
-
-```text
-Discovered tests: N
-Mapped tests: N
-Runtime edges: N
-Persisted: True
-```
-
-Runtime edges are persisted as:
-
-```text
-TestFunction -> executes_runtime -> Function
-```
-
----
-
-## 10. Common workflows
-
-### A. Normal Git PR workflow
-
-```powershell
-python softgnn.py prepare --project my-app --path "C:\repo\my-app" --skip-train
-python softgnn.py pr-scan --project my-app --repo-path "C:\repo\my-app" --base main --head HEAD --change-source auto
-python softgnn.py generate-tests --project my-app --repo-path "C:\repo\my-app" --base main --head HEAD --mode plan --change-source auto
-python softgnn.py generate-tests --project my-app --repo-path "C:\repo\my-app" --base main --head HEAD --mode patch --verify --repair-iters 2 --confirm-pr-scan --change-source auto
-git diff
-```
-
-### B. No-Git project workflow
-
-```powershell
-python softgnn.py prepare --project no-git-app --path "C:\repo\no-git-app" --skip-train
-python softgnn.py pr-scan --project no-git-app --repo-path "C:\repo\no-git-app" --change-source filesystem
-python softgnn.py generate-tests --project no-git-app --repo-path "C:\repo\no-git-app" --mode plan --change-source filesystem
-```
-
-### C. New project / first-run full scan
-
-```powershell
-python softgnn.py prepare --project new-app --path "C:\repo\new-app" --skip-train
-python softgnn.py pr-scan --project new-app --repo-path "C:\repo\new-app" --change-source full-scan
-python softgnn.py generate-tests --project new-app --repo-path "C:\repo\new-app" --mode plan --change-source full-scan --max-targets 3
-```
-
-### D. Explicit target workflow
-
-```powershell
-python softgnn.py generate-tests `
-  --project my-app `
-  --repo-path "C:\repo\my-app" `
-  --mode plan `
-  --target-id "FUNC:my_function" `
-  --source-file "src/my_module.py" `
-  --generation-strategy auto
-```
-
----
-
-## 11. Safety recommendations
+## 7. Safety recommendations
 
 ```text
 run on a feature branch
-start with --mode plan
-patch only after reviewing the plan
-use --verify and --confirm-pr-scan
-review git diff manually
-commit only generated tests you want to keep
+start with plan before apply
+review the saved plan output
+apply reuses the reviewed plan when valid
+use git diff before committing
+commit only generated tests you want
 never commit API keys or .env files
 ```
 
 ---
 
-## 12. Troubleshooting
+## 8. Troubleshooting
 
 ### `Data not found for project`
 
-Run prepare first:
+Run setup first:
 
 ```powershell
-python softgnn.py prepare --project my-app --path "C:\repo\my-app" --skip-train
+python softgnn.py setup C:\repo\my-app
 ```
 
 ### `LLM provider not configured`
 
-Either configure an LLM or use templates:
+Use templates:
 
 ```powershell
-python softgnn.py generate-tests --project my-app --repo-path "C:\repo\my-app" --mode plan --generation-strategy template
+python softgnn.py plan C:\repo\my-app --strategy template
 ```
 
-### `Changed Python file not found in graph`
+### Saved plan is stale
 
-This can happen for new files. SoftGNN will parse the file incrementally and create transient scan targets. To persist the file into the graph, rerun:
+The source changed after planning. Re-run:
 
 ```powershell
-python softgnn.py prepare --project my-app --path "C:\repo\my-app" --skip-train
+python softgnn.py plan C:\repo\my-app
+python softgnn.py apply C:\repo\my-app
 ```
 
-### No Git repository
-
-Use:
+or force it:
 
 ```powershell
---change-source filesystem
+python softgnn.py apply C:\repo\my-app --force-stale-plan
 ```
 
-or:
+### New file not found in graph
+
+SoftGNN can parse new Python files transiently. To persist them into the graph:
 
 ```powershell
---change-source full-scan
+python softgnn.py setup C:\repo\my-app
 ```
 
 ---
 
-## 13. Current limitations
+## 9. Current limitations
 
 ```text
-M4A handles new files as transient scan/generation targets.
-Persisting fully incremental graph updates without ETL is a future optimization.
-Runtime-proof acceptance is planned for M4B.
-Large-scale batch generation is planned for M8.
-Production-code fixes are disabled by design in v0.1.
+new files are supported as transient scan/generation targets until setup is rerun
+runtime-proof acceptance is planned for M4B
+large-scale batch generation is planned for M8
+production-code modification is disabled by design in v0.1
 ```
