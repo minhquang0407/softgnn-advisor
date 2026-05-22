@@ -51,7 +51,7 @@ $env:SOFTGNN_LLM_MODEL="qwen2.5-coder:7b"
 No LLM? Use templates:
 
 ```powershell
-python softgnn.py apply C:\repo\my-app --strategy template
+python softgnn.py apply --project my-app --strategy template
 ```
 
 ---
@@ -62,7 +62,7 @@ After setup, **a single command is all you need:**
 
 ```powershell
 python softgnn.py setup C:\repo\my-app
-python softgnn.py apply C:\repo\my-app
+python softgnn.py apply --project my-app
 ```
 
 `apply` runs the complete workflow automatically:
@@ -90,13 +90,13 @@ If you want to **review proposed tests before patching**, use `plan` first:
 
 ```powershell
 python softgnn.py setup C:\repo\my-app
-python softgnn.py plan C:\repo\my-app
+python softgnn.py plan --project my-app
 ```
 
 Inspect the output, then apply the reviewed plan:
 
 ```powershell
-python softgnn.py apply C:\repo\my-app
+python softgnn.py apply --project my-app
 ```
 
 `apply` reuses the saved plan — it skips pre-scan and LLM generation and patches exactly what you reviewed. If the source has changed since planning, it warns and falls back to fresh generation.
@@ -105,9 +105,9 @@ Full optional workflow:
 
 ```powershell
 python softgnn.py setup C:\repo\my-app
-python softgnn.py scan C:\repo\my-app   # inspect only, no LLM, no writes
-python softgnn.py plan C:\repo\my-app   # generate + review + save plan
-python softgnn.py apply C:\repo\my-app  # apply reviewed plan
+python softgnn.py scan --project my-app   # inspect only, no LLM, no writes
+python softgnn.py plan --project my-app   # generate + review + save plan
+python softgnn.py apply --project my-app  # apply reviewed plan
 ```
 
 The project name defaults to the repo folder name. Override it with:
@@ -146,7 +146,7 @@ python softgnn.py setup C:\repo\my-app --train
 ### `scan`
 
 ```powershell
-python softgnn.py scan C:\repo\my-app
+python softgnn.py scan --project my-app
 ```
 
 Properties:
@@ -161,9 +161,9 @@ Change source: auto
 Force a source:
 
 ```powershell
-python softgnn.py scan C:\repo\my-app --source git
-python softgnn.py scan C:\repo\my-app --source filesystem
-python softgnn.py scan C:\repo\my-app --source full-scan
+python softgnn.py scan --project my-app --source git
+python softgnn.py scan --project my-app --source filesystem
+python softgnn.py scan --project my-app --source full-scan
 ```
 
 ---
@@ -171,7 +171,7 @@ python softgnn.py scan C:\repo\my-app --source full-scan
 ### `plan`
 
 ```powershell
-python softgnn.py plan C:\repo\my-app
+python softgnn.py plan --project my-app
 ```
 
 Properties:
@@ -187,13 +187,13 @@ does not run pytest
 Explicit target:
 
 ```powershell
-python softgnn.py plan C:\repo\my-app --target FUNC:foo --file src/foo.py
+python softgnn.py plan --project my-app --target FUNC:foo --file src/foo.py
 ```
 
 Template-only, no LLM:
 
 ```powershell
-python softgnn.py plan C:\repo\my-app --strategy template
+python softgnn.py plan --project my-app --strategy template
 ```
 
 Saved plan location:
@@ -208,7 +208,7 @@ data_output/<project>/plans/<plan_id>.json
 ### `apply`
 
 ```powershell
-python softgnn.py apply C:\repo\my-app
+python softgnn.py apply --project my-app
 ```
 
 Default behavior:
@@ -228,19 +228,19 @@ run post-scan confirmation
 Force fresh generation instead of using saved plan:
 
 ```powershell
-python softgnn.py apply C:\repo\my-app --ignore-plan
+python softgnn.py apply --project my-app --ignore-plan
 ```
 
 Apply a specific plan:
 
 ```powershell
-python softgnn.py apply C:\repo\my-app --plan 20260522_180000
+python softgnn.py apply --project my-app --plan 20260522_180000
 ```
 
 Apply a stale plan anyway:
 
 ```powershell
-python softgnn.py apply C:\repo\my-app --force-stale-plan
+python softgnn.py apply --project my-app --force-stale-plan
 ```
 
 ---
@@ -248,7 +248,7 @@ python softgnn.py apply C:\repo\my-app --force-stale-plan
 ### `map`
 
 ```powershell
-python softgnn.py map C:\repo\my-app
+python softgnn.py map --project my-app
 ```
 
 Defaults:
@@ -262,7 +262,7 @@ persist: true
 Custom pytest args:
 
 ```powershell
-python softgnn.py map C:\repo\my-app --pytest "tests/test_api.py -q"
+python softgnn.py map --project my-app --pytest "tests/test_api.py -q"
 ```
 
 ---
@@ -282,9 +282,9 @@ full-scan   treat all Python files as changed
 
 ```powershell
 python softgnn.py setup C:\repo\my-app
-python softgnn.py scan C:\repo\my-app --source auto
-python softgnn.py plan C:\repo\my-app --source auto
-python softgnn.py apply C:\repo\my-app --source auto
+python softgnn.py scan --project my-app --source auto
+python softgnn.py plan --project my-app --source auto
+python softgnn.py apply --project my-app --source auto
 ```
 
 ### No-Git project
@@ -364,7 +364,7 @@ python softgnn.py setup C:\repo\my-app
 Use templates:
 
 ```powershell
-python softgnn.py plan C:\repo\my-app --strategy template
+python softgnn.py plan --project my-app --strategy template
 ```
 
 ### Saved plan is stale
@@ -372,14 +372,14 @@ python softgnn.py plan C:\repo\my-app --strategy template
 The source changed after planning. Re-run:
 
 ```powershell
-python softgnn.py plan C:\repo\my-app
-python softgnn.py apply C:\repo\my-app
+python softgnn.py plan --project my-app
+python softgnn.py apply --project my-app
 ```
 
 or force it:
 
 ```powershell
-python softgnn.py apply C:\repo\my-app --force-stale-plan
+python softgnn.py apply --project my-app --force-stale-plan
 ```
 
 ### New file not found in graph
@@ -400,3 +400,4 @@ runtime-proof acceptance is planned for M4B
 large-scale batch generation is planned for M8
 production-code modification is disabled by design in v0.1
 ```
+

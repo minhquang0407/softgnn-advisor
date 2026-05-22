@@ -186,7 +186,7 @@ After setup, a single command runs the full workflow:
 
 ```powershell
 python softgnn.py setup C:\repo\my-app
-python softgnn.py apply C:\repo\my-app
+python softgnn.py apply --project my-app
 ```
 
 `apply` does everything automatically:
@@ -210,14 +210,14 @@ Want to review proposed tests before patching? Use `plan` first:
 
 ```powershell
 python softgnn.py setup C:\repo\my-app
-python softgnn.py plan C:\repo\my-app   # review output
-python softgnn.py apply C:\repo\my-app  # apply reviewed plan
+python softgnn.py plan --project my-app   # review output
+python softgnn.py apply --project my-app  # apply reviewed plan
 ```
 
 Template-only generation (no LLM):
 
 ```powershell
-python softgnn.py apply C:\repo\my-app --strategy template
+python softgnn.py apply --project my-app --strategy template
 ```
 
 Advanced commands are still available (`prepare`, `pr-scan`, `generate-tests`, `test-map`).
@@ -318,3 +318,4 @@ Read more:
 ## License
 
 MIT License. See [LICENSE](LICENSE).
+
