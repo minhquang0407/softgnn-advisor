@@ -113,8 +113,27 @@ python softgnn.py apply --project my-app  # apply reviewed plan
 The project name defaults to the repo folder name. Override it with:
 
 ```powershell
-python softgnn.py setup C:\repo\my-app --project custom-name
+python softgnn.py setup C:\repo\my-app --project my-app
 ```
+
+Mental model:
+
+```text
+setup/prepare need the repo path once
+everyday commands use --project
+```
+
+Daily commands after setup:
+
+| Goal | Command |
+|---|---|
+| Generate + verify tests | `python softgnn.py apply --project my-app` |
+| Review before patching | `python softgnn.py plan --project my-app` |
+| Inspect change impact | `python softgnn.py scan --project my-app` |
+| Runtime test map | `python softgnn.py map --project my-app` |
+| Health check | `python softgnn.py doctor --project my-app` |
+| Impact of one symbol | `python softgnn.py impact --project my-app FUNC:foo` |
+| Developer triage | `python softgnn.py triage --project my-app "bug description"` |
 
 
 ## 5. Simple commands
@@ -290,16 +309,17 @@ python softgnn.py apply --project my-app --source auto
 ### No-Git project
 
 ```powershell
-python softgnn.py setup C:\repo\no-git-app
-python softgnn.py scan C:\repo\no-git-app --source filesystem
-python softgnn.py plan C:\repo\no-git-app --source filesystem
+python softgnn.py setup C:\repo\no-git-app --project no-git-app
+python softgnn.py scan --project no-git-app --source filesystem
+python softgnn.py plan --project no-git-app --source filesystem
 ```
 
 ### First-run full scan
 
 ```powershell
-python softgnn.py scan C:\repo\new-app --source full-scan
-python softgnn.py plan C:\repo\new-app --source full-scan --max-targets 3
+python softgnn.py setup C:\repo\new-app --project new-app
+python softgnn.py scan --project new-app --source full-scan
+python softgnn.py plan --project new-app --source full-scan --max-targets 3
 ```
 
 ---
@@ -310,11 +330,14 @@ The simple commands are wrappers over advanced commands.
 
 | Simple | Advanced |
 |---|---|
-| `setup` | `prepare --skip-train` |
-| `scan` | `pr-scan --change-source auto` |
-| `plan` | `generate-tests --mode plan` + plan cache |
-| `apply` | `generate-tests --mode patch --verify --repair-iters 2 --confirm-pr-scan` |
-| `map` | `test-map --mode per-test --persist` |
+| `setup <repo_path>` | `prepare --path <repo_path> --skip-train` |
+| `scan --project my-app` | `pr-scan --project my-app --change-source auto` |
+| `plan --project my-app` | `generate-tests --project my-app --mode plan` + plan cache |
+| `apply --project my-app` | `generate-tests --project my-app --mode patch --verify --repair-iters 2 --confirm-pr-scan` |
+| `map --project my-app` | `test-map --project my-app --mode per-test --persist` |
+| `doctor --project my-app` | `doctor --project my-app` |
+| `impact --project my-app FUNC:foo` | `impact --project my-app FUNC:foo` |
+| `triage --project my-app "bug"` | `triage --project my-app "bug"` |
 
 Advanced example:
 

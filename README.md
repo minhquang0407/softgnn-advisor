@@ -222,6 +222,25 @@ python softgnn.py apply --project my-app --strategy template
 
 Advanced commands are still available (`prepare`, `pr-scan`, `generate-tests`, `test-map`).
 
+Mental model:
+
+```text
+setup/prepare need the repo path once
+everyday commands use --project
+```
+
+Daily commands after setup:
+
+| Goal | Command |
+|---|---|
+| Generate + verify tests | `python softgnn.py apply --project my-app` |
+| Review before patching | `python softgnn.py plan --project my-app` |
+| Inspect change impact | `python softgnn.py scan --project my-app` |
+| Runtime test map | `python softgnn.py map --project my-app` |
+| Health check | `python softgnn.py doctor --project my-app` |
+| Impact of one symbol | `python softgnn.py impact --project my-app FUNC:foo` |
+| Developer triage | `python softgnn.py triage --project my-app "bug description"` |
+
 More details: [docs/quickstart.md](docs/quickstart.md)
 
 The full guide covers:
