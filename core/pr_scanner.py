@@ -1,27 +1,13 @@
 import ast
 import os
 import re
-import subprocess
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from config.settings import get_project_paths
+from core.change_provider import ChangedFile, ChangedHunk, build_change_set
 from core.impact_engine import ImpactEngine, ImpactTarget
 from infrastructure.pipelines.contract_extractor import ContractExtractor, load_contract_snapshot
-
-
-@dataclass
-class ChangedHunk:
-    start_line: int
-    end_line: int
-
-
-@dataclass
-class ChangedFile:
-    path: str
-    hunks: list = field(default_factory=list)
-    added_lines: int = 0
-    deleted_lines: int = 0
 
 
 @dataclass
@@ -97,6 +83,7 @@ class PRScanResult:
     contract_changes: list = field(default_factory=list)
     related_tests: list = field(default_factory=list)
     missing_coverage: list = field(default_factory=list)
+    change_source: str = 'git'
 
 
 class PRScanner:
@@ -109,12 +96,13 @@ class PRScanner:
         self.contracts_path = str(paths.get('CONTRACTS_PATH'))
         self.contract_snapshot = load_contract_snapshot(self.contracts_path)
 
-    def scan(self, base='main', head='HEAD', mode='hybrid', gnn_types='File,Class,Function', max_impact=30, max_reviewers=3, suggest_tests=True):
+    def scan(self, base='main', head='HEAD', mode='hybrid', gnn_types='File,Class,Function', max_impact=30, max_reviewers=3, suggest_tests=True, change_source='auto'):
         warnings = []
-        changed_files = self._read_changed_files(base, head, warnings)
+        change_set = self._read_changed_files(base, head, warnings, change_source=change_source)
+        changed_files = change_set.files
         changed_nodes = self._map_changed_nodes(changed_files, warnings)
         if not changed_nodes:
-            return PRScanResult(changed_files, [], [], [], [], warnings)
+            return PRScanResult(changed_files, [], [], [], [], warnings, change_source=change_set.source)
 
         contract_changes = self._detect_contract_changes(changed_nodes, changed_files, warnings)
         impact_hotspots = self._aggregate_impact(changed_nodes, mode, gnn_types, max_impact, warnings)
@@ -122,33 +110,12 @@ class PRScanner:
         related_tests = self._find_related_tests(changed_nodes, impact_hotspots)
         missing_coverage = self._find_missing_coverage(changed_nodes, contract_changes, related_tests)
         tests = self._suggest_tests(changed_nodes, impact_hotspots, missing_coverage) if suggest_tests else []
-        return PRScanResult(changed_files, changed_nodes, impact_hotspots, reviewers, tests, warnings, contract_changes, related_tests, missing_coverage)
+        return PRScanResult(changed_files, changed_nodes, impact_hotspots, reviewers, tests, warnings, contract_changes, related_tests, missing_coverage, change_set.source)
 
-    def _run_git(self, args, warnings):
-        try:
-            result = subprocess.run(
-                ['git'] + args,
-                cwd=self.repo_path,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                check=True,
-            )
-            return result.stdout
-        except subprocess.CalledProcessError as e:
-            warnings.append(f"git {' '.join(args)} failed: {e.stderr.strip() or e.stdout.strip()}")
-            return ''
-
-    def _read_changed_files(self, base, head, warnings):
-        diff_ref = f'{base}...{head}'
-        name_output = self._run_git(['diff', '--name-only', diff_ref], warnings)
-        paths = [line.strip().replace('\\', '/') for line in name_output.splitlines() if line.strip()]
-        changed_files = []
-        for rel_path in paths:
-            diff_output = self._run_git(['diff', '--unified=0', diff_ref, '--', rel_path], warnings)
-            changed_files.append(self._parse_file_diff(rel_path, diff_output))
-        return changed_files
+    def _read_changed_files(self, base, head, warnings, change_source='auto'):
+        change_set = build_change_set(self.project, self.repo_path, base=base, head=head, change_source=change_source)
+        warnings.extend(change_set.warnings)
+        return change_set
 
     def _parse_file_diff(self, rel_path, diff_output):
         hunks = []
@@ -174,15 +141,23 @@ class PRScanner:
 
     def _map_changed_nodes(self, changed_files, warnings):
         node_by_key = {}
+        transient_index = 0
         for changed_file in changed_files:
             file_id = f"FILE:{changed_file.path}"
             file_key = self.engine.key_by_full_id.get(file_id)
             if file_key:
                 node_by_key[file_key] = ChangedNode(file_key, file_id, self.engine.display_node_label(file_key), 'File', changed_file.path)
+            elif changed_file.path.endswith('.py') and changed_file.status != 'deleted':
+                warnings.append(f"Changed Python file not found in graph; parsing incrementally: {changed_file.path}")
+            elif not changed_file.path.endswith('.py'):
+                warnings.append(f"Changed non-code file skipped: {changed_file.path}")
             else:
                 warnings.append(f"Changed file not found in graph: {changed_file.path}")
 
             if not changed_file.path.endswith('.py'):
+                continue
+            if changed_file.status == 'deleted':
+                warnings.append(f"Changed Python file was deleted; skipping test target discovery: {changed_file.path}")
                 continue
             abs_path = os.path.join(self.repo_path, changed_file.path.replace('/', os.sep))
             if not os.path.exists(abs_path):
@@ -200,6 +175,11 @@ class PRScanner:
                     key = self.engine.key_by_full_id.get(node_id)
                     if key:
                         node_by_key[key] = ChangedNode(key, node_id, self.engine.display_node_label(key), node_type, changed_file.path)
+                    elif changed_file.status in {'added', 'modified'}:
+                        transient_index += 1
+                        transient_key = ('Transient', transient_index)
+                        label = node_id.replace('FUNC:', '').replace('CLASS:', '')
+                        node_by_key[transient_key] = ChangedNode(transient_key, node_id, label, node_type, changed_file.path)
         return sorted(node_by_key.values(), key=lambda n: {'Function': 0, 'Class': 1, 'File': 2}.get(n.node_type, 9))[:20]
 
     def _collect_symbol_ranges(self, tree):
@@ -226,6 +206,9 @@ class PRScanner:
         merged = {}
         source_counts = Counter()
         for changed_node in changed_nodes:
+            if changed_node.key not in self.engine.full_id_by_key:
+                warnings.append(f"Impact analysis skipped for transient node not yet persisted in graph: {changed_node.full_id}")
+                continue
             target = ImpactTarget(key=changed_node.key, full_id=changed_node.full_id, node_type=changed_node.node_type)
             result = self.engine.analyze(target, mode=mode, gnn_types=gnn_types, limit=max_impact)
             if result is None:

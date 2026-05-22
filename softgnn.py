@@ -59,17 +59,26 @@ def train(project):
 @cli.command()
 @click.option('--project', required=True, help='Ten du an')
 @click.option('--path', default='.', help='Duong dan toi repository can quet va huan luyen')
-def prepare(project, path):
-    """Chay tron bo pipeline: ETL -> Train"""
+@click.option('--skip-train/--with-train', default=False, show_default=True, help='Build graph/snapshot without training the HGT model')
+def prepare(project, path, skip_train):
+    """Chay onboarding pipeline: ETL -> optional Train."""
     console.rule(f"[bold cyan]SoftGNN Prepare Pipeline - Project: {project}")
     console.print(f"Step 1/2: ETL for [yellow]{os.path.abspath(path)}[/yellow]")
 
     from scripts.etl_run import run_etl_pipeline
     from scripts.train_model import run_optimization
+    from core.change_provider import build_filesystem_snapshot, save_filesystem_snapshot, snapshot_path_for_project
 
     try:
         run_etl_pipeline(path, project)
-        console.print("[bold green][SUCCESS] ETL completed.[/bold green]")
+        snapshot = build_filesystem_snapshot(path)
+        save_filesystem_snapshot(snapshot_path_for_project(project), snapshot)
+        console.print("[bold green][SUCCESS] ETL completed and filesystem snapshot saved.[/bold green]")
+
+        if skip_train:
+            console.print("[yellow]Skipping HGT training because --skip-train was set.[/yellow]")
+            console.print(f"You can now run: [cyan]python softgnn.py pr-scan --project {project} --repo-path {os.path.abspath(path)} --change-source auto[/cyan]")
+            return
 
         console.print("\nStep 2/2: Training HGT model")
         run_optimization(project)
@@ -103,7 +112,8 @@ def prepare(project, path):
 @click.option('--llm-required/--llm-fallback', default=False, show_default=True, help='Fail if LLM is unavailable instead of falling back to templates')
 @click.option('--llm-temperature', default=0.1, show_default=True, help='LLM temperature')
 @click.option('--llm-max-tokens', default=4096, show_default=True, help='LLM max output tokens')
-def generate_tests(project, base, head, repo_path, mode, max_targets, target_id, source_file, verify, repair_iters, refresh_runtime, runtime_mode, confirm_pr_scan, keep_failing_tests, pytest_args, generation_strategy, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens):
+@click.option('--change-source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True, help='Detect changes from git, filesystem snapshot, or full scan')
+def generate_tests(project, base, head, repo_path, mode, max_targets, target_id, source_file, verify, repair_iters, refresh_runtime, runtime_mode, confirm_pr_scan, keep_failing_tests, pytest_args, generation_strategy, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, change_source):
     """Generate impact-aware pytest plans or conservative test patches."""
     from core.test_generation_agent import TestGenerationAgent
 
@@ -139,6 +149,7 @@ def generate_tests(project, base, head, repo_path, mode, max_targets, target_id,
             llm_required=llm_required,
             llm_temperature=llm_temperature,
             llm_max_tokens=llm_max_tokens,
+            change_source=change_source,
         )
     except Exception as e:
         console.print(f"[bold red][ERROR] Test generation failed: {e}[/bold red]")
@@ -211,12 +222,14 @@ def test_map(project, repo_path, pytest_args, mode, persist, max_tests):
 @click.option('--project', required=True, help='Ten du an')
 @click.option('--base', default='main', show_default=True, help='Base git ref')
 @click.option('--head', default='HEAD', show_default=True, help='Head git ref')
+@click.option('--repo-path', default=None, help='Optional repository path override')
+@click.option('--change-source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True, help='Detect changes from git, filesystem snapshot, or full scan')
 @click.option('--mode', type=click.Choice(['deterministic', 'hybrid', 'gnn']), default='hybrid', show_default=True, help='Impact scoring mode')
 @click.option('--gnn-types', default='File,Class,Function', show_default=True, help='Comma-separated node types for GNN impact candidates')
 @click.option('--max-impact', default=30, show_default=True, help='Maximum impact hotspots to show')
 @click.option('--max-reviewers', default=3, show_default=True, help='Maximum reviewers to recommend')
 @click.option('--suggest-tests/--no-suggest-tests', default=True, show_default=True, help='Suggest tests for changed and impacted nodes')
-def pr_scan(project, base, head, mode, gnn_types, max_impact, max_reviewers, suggest_tests):
+def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_impact, max_reviewers, suggest_tests):
     """Scan a local PR/diff and recommend impact, reviewers, and tests."""
     from core.pr_scanner import PRScanner
 
@@ -224,11 +237,12 @@ def pr_scan(project, base, head, mode, gnn_types, max_impact, max_reviewers, sug
         f"Running PR Scan\n"
         f"Project: [yellow]{project}[/yellow]\n"
         f"Range: [cyan]{base}...{head}[/cyan]\n"
+        f"Change source: [cyan]{change_source}[/cyan]\n"
         f"Mode: [cyan]{mode}[/cyan]"
     ))
     try:
-        scanner = PRScanner(project)
-        result = scanner.scan(base=base, head=head, mode=mode, gnn_types=gnn_types, max_impact=max_impact, max_reviewers=max_reviewers, suggest_tests=suggest_tests)
+        scanner = PRScanner(project, repo_path=repo_path)
+        result = scanner.scan(base=base, head=head, mode=mode, gnn_types=gnn_types, max_impact=max_impact, max_reviewers=max_reviewers, suggest_tests=suggest_tests, change_source=change_source)
     except FileNotFoundError as e:
         console.print(f"[bold red][ERROR] {e}[/bold red]")
         return
@@ -239,6 +253,7 @@ def pr_scan(project, base, head, mode, gnn_types, max_impact, max_reviewers, sug
     summary = Table(title="PR Scan Summary")
     summary.add_column("Metric", style="cyan")
     summary.add_column("Value", style="green")
+    summary.add_row("Change source", result.change_source)
     summary.add_row("Changed files", str(len(result.changed_files)))
     summary.add_row("Changed graph nodes", str(len(result.changed_nodes)))
     summary.add_row("Impact hotspots", str(len(result.impact_hotspots)))
@@ -254,9 +269,11 @@ def pr_scan(project, base, head, mode, gnn_types, max_impact, max_reviewers, sug
         files_table.add_column("#", justify="right", style="cyan")
         files_table.add_column("File", style="magenta")
         files_table.add_column("Hunks", justify="right", style="yellow")
+        files_table.add_column("Status", style="blue")
+        files_table.add_column("Source", style="cyan")
         files_table.add_column("+/-", style="green")
         for idx, changed_file in enumerate(result.changed_files[:20], start=1):
-            files_table.add_row(str(idx), changed_file.path, str(len(changed_file.hunks)), f"+{changed_file.added_lines}/-{changed_file.deleted_lines}")
+            files_table.add_row(str(idx), changed_file.path, str(len(changed_file.hunks)), getattr(changed_file, 'status', 'modified'), getattr(changed_file, 'source', result.change_source), f"+{changed_file.added_lines}/-{changed_file.deleted_lines}")
         console.print(files_table)
 
     if result.changed_nodes:

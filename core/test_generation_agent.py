@@ -74,13 +74,13 @@ class TestGenerationAgent:
         self.llm_config = load_llm_config(provider=llm_provider, base_url=llm_base_url, model=llm_model, api_key=llm_api_key, timeout=llm_timeout)
         self.llm_provider = build_llm_provider(self.llm_config)
 
-    def generate(self, base='main', head='HEAD', mode='plan', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096):
+    def generate(self, base='main', head='HEAD', mode='plan', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto'):
         if mode not in ('plan', 'patch'):
             raise ValueError("mode must be 'plan' or 'patch'")
         if generation_strategy not in ('template', 'llm', 'auto'):
             raise ValueError("generation_strategy must be one of: template, llm, auto")
         warnings = []
-        scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True)
+        scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True, change_source=change_source)
         pre_missing_count = len(scan.missing_coverage)
         if target_id:
             if not source_file:
@@ -128,7 +128,7 @@ class TestGenerationAgent:
                 elif pytest_returncode == 0 and refresh_runtime:
                     runtime_result = RuntimeCoverageMapper(self.project, repo_path=self.repo_path).map_runtime_coverage(pytest_args=pytest_args or 'tests', mode=runtime_mode, persist=True)
                     if confirm_pr_scan:
-                        post_scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True)
+                        post_scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True, change_source=change_source)
                         post_missing_count = len(post_scan.missing_coverage)
         return TestGenerationResult(targets, plans, files_written, pytest_returncode, pytest_output, warnings + scan.warnings, mode, failures, repair_attempts, rolled_back, runtime_result, post_scan, pre_missing_count, post_missing_count)
 
