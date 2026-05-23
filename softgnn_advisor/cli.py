@@ -1197,6 +1197,151 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
         console.print(f"Next: [cyan]python softgnn.py apply --project {project}[/cyan]")
 
 
+@cli.command('generate')
+@click.option('--project', required=True, help='Project name created by setup/prepare')
+@click.option('--repo-path', default=None, help='Optional override; otherwise read from project metadata')
+@click.option('--base', default='main', show_default=True)
+@click.option('--head', default='HEAD', show_default=True)
+@click.option('--target', default=None, help='Target id, e.g. FUNC:foo')
+@click.option('--file', 'source_file', default=None, help='Source file for explicit target')
+@click.option('--max-targets', default=3, show_default=True)
+@click.option('--strategy', type=click.Choice(['template', 'llm', 'auto']), default='llm', show_default=True)
+@click.option('--no-llm', is_flag=True, help='Do not call LLM; generate template tests')
+@click.option('--llm-provider', default=None, help='LLM provider override, e.g. openai-compatible')
+@click.option('--llm-model', default=None, help='LLM model override')
+@click.option('--llm-base-url', default=None, help='LLM base URL override')
+@click.option('--llm-api-key-env', default=None, help='Name of env var containing the LLM API key')
+@click.option('--llm-required/--llm-fallback', default=False, show_default=True, help='Fail if LLM is unavailable instead of falling back to templates')
+@click.option('--llm-temperature', default=0.1, show_default=True, help='LLM temperature')
+@click.option('--llm-max-tokens', default=4096, show_default=True, help='LLM max output tokens')
+@click.option('--source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True)
+@click.option('--repair', default=2, show_default=True)
+@click.option('--replan-iters', default=1, show_default=True, help='Re-plan rolled-back/failed targets after apply feedback')
+@click.option('--pytest', 'pytest_args', default=None, help='Override pytest args')
+@click.option('--keep-failing-tests/--rollback-failing-tests', default=False, show_default=True)
+@click.option('--partial-rollback/--batch-rollback', default=True, show_default=True, help='Keep passing generated tests and roll back only failing generated tests')
+@click.option('--pytest-stream/--no-pytest-stream', default=True, show_default=True, help='Stream pytest output while verification runs')
+def simple_generate(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream):
+    """Beginner generate: run plan, save it, then apply that saved plan."""
+    repo_path = repo_path or _repo_path_for_project(project)
+    console.print("[cyan]Workflow: plan -> save -> apply | Pytest: yes | Runtime map: yes[/cyan]")
+    from softgnn_advisor.core.test_generation_agent import TestGenerationAgent
+    from softgnn_advisor.core.plan_cache import bundle_to_generation_plans, save_plan_bundle
+    if no_llm:
+        strategy = 'template'
+        llm_required = False
+    else:
+        llm_required = True if strategy == 'llm' else llm_required
+    llm_api_key = os.getenv(llm_api_key_env) if llm_api_key_env else None
+    agent = TestGenerationAgent(
+        project,
+        repo_path=repo_path,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
+        llm_api_key=llm_api_key,
+    )
+    plan_result = agent.generate(
+        base=base,
+        head=head,
+        mode='plan',
+        max_targets=max_targets,
+        target_id=target,
+        source_file=source_file,
+        verify=False,
+        repair_iters=0,
+        refresh_runtime=False,
+        generation_strategy=strategy,
+        llm_required=llm_required,
+        llm_temperature=llm_temperature,
+        llm_max_tokens=llm_max_tokens,
+        change_source=source,
+    )
+    _render_generation(agent, plan_result)
+    if not plan_result.plans:
+        console.print("[yellow]No plans were generated; apply skipped.[/yellow]")
+        return
+    plan_path, latest_path, bundle = save_plan_bundle(project, plan_result, repo_path, base=base, head=head, change_source=source, llm_config=agent.llm_config)
+    console.print(f"[bold green]Plan saved:[/bold green] {plan_path}")
+    console.print(f"[bold green]Latest plan:[/bold green] {latest_path}")
+    plans = bundle_to_generation_plans(bundle)
+    result = agent.apply_saved_plans(
+        plans,
+        base=base,
+        head=head,
+        verify=True,
+        repair_iters=repair,
+        refresh_runtime=True,
+        runtime_mode='per-test',
+        confirm_pr_scan=True,
+        keep_failing_tests=keep_failing_tests,
+        pytest_args=pytest_args,
+        generation_strategy=strategy,
+        llm_required=llm_required,
+        llm_temperature=llm_temperature,
+        llm_max_tokens=llm_max_tokens,
+        change_source=source,
+        partial_rollback=partial_rollback,
+        pytest_stream=pytest_stream,
+    )
+    _render_generation(agent, result)
+    for iteration in range(1, max(0, int(replan_iters or 0)) + 1):
+        feedback = agent._apply_feedback_from_result(result)
+        if not feedback:
+            console.print("[green]No failed targets remain; replan loop complete.[/green]")
+            break
+        console.print(f"[cyan]Replanning {len(feedback)} failed target(s), iteration {iteration}/{replan_iters}.[/cyan]")
+        retry_results = []
+        for target_id, item in feedback.items():
+            retry_result = agent.generate(
+                base=base,
+                head=head,
+                mode='plan',
+                max_targets=1,
+                target_id=target_id,
+                source_file=item.get('source_file'),
+                verify=False,
+                repair_iters=0,
+                refresh_runtime=False,
+                generation_strategy=strategy,
+                llm_required=llm_required,
+                llm_temperature=llm_temperature,
+                llm_max_tokens=llm_max_tokens,
+                change_source=source,
+                failure_feedback=feedback,
+            )
+            retry_results.append(retry_result)
+        retry_plans = [plan for retry_result in retry_results for plan in retry_result.plans]
+        if not retry_plans:
+            console.print("[yellow]No retry plans were generated; stopping replan loop.[/yellow]")
+            break
+        retry_result_for_save = retry_results[0]
+        retry_result_for_save.plans = retry_plans
+        retry_plan_path, retry_latest_path, retry_bundle = save_plan_bundle(project, retry_result_for_save, repo_path, base=base, head=head, change_source=source, llm_config=agent.llm_config)
+        console.print(f"[bold green]Retry plan saved:[/bold green] {retry_plan_path}")
+        console.print(f"[bold green]Latest plan:[/bold green] {retry_latest_path}")
+        result = agent.apply_saved_plans(
+            bundle_to_generation_plans(retry_bundle),
+            base=base,
+            head=head,
+            verify=True,
+            repair_iters=repair,
+            refresh_runtime=True,
+            runtime_mode='per-test',
+            confirm_pr_scan=True,
+            keep_failing_tests=keep_failing_tests,
+            pytest_args=pytest_args,
+            generation_strategy=strategy,
+            llm_required=llm_required,
+            llm_temperature=llm_temperature,
+            llm_max_tokens=llm_max_tokens,
+            change_source=source,
+            partial_rollback=partial_rollback,
+            pytest_stream=pytest_stream,
+        )
+        _render_generation(agent, result)
+
+
 @cli.command('apply')
 @click.option('--project', required=True, help='Project name created by setup/prepare')
 @click.option('--repo-path', default=None, help='Optional override; otherwise read from project metadata')
@@ -1224,16 +1369,25 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--partial-rollback/--batch-rollback', default=True, show_default=True, help='Keep passing generated tests and roll back only failing generated tests')
 @click.option('--pytest-stream/--no-pytest-stream', default=True, show_default=True, help='Stream pytest output while verification runs')
 def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, pytest_args, keep_failing_tests, partial_rollback, pytest_stream):
-    """Beginner apply: generate LLM tests by default, then patch, verify, map runtime, and confirm."""
+    """Beginner apply: load a saved plan, patch tests, verify, rollback failures, map runtime."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Writes: tests only | Pytest: yes | Runtime map: yes[/cyan]")
     from softgnn_advisor.core.test_generation_agent import TestGenerationAgent
     from softgnn_advisor.core.plan_cache import bundle_to_generation_plans, load_plan_bundle, validate_plan_bundle
+    ignored_options = []
+    if ignore_plan:
+        ignored_options.append('--ignore-plan')
+    if target:
+        ignored_options.append('--target')
+    if source_file:
+        ignored_options.append('--file')
+    if max_targets != 3:
+        ignored_options.append('--max-targets')
     if no_llm:
-        strategy = 'template' if strategy == 'llm' else strategy
-        llm_required = False
-    else:
-        llm_required = True if strategy == 'llm' else llm_required
+        ignored_options.append('--no-llm')
+    if ignored_options:
+        console.print(f"[yellow]Ignored by apply: {', '.join(ignored_options)}. Use `softgnn generate` or `softgnn plan` for generation.[/yellow]")
+    llm_required = True if strategy == 'llm' else llm_required
     llm_api_key = os.getenv(llm_api_key_env) if llm_api_key_env else None
     agent = TestGenerationAgent(
         project,
@@ -1243,51 +1397,30 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
     )
-    if not ignore_plan:
-        try:
-            bundle, loaded_path = load_plan_bundle(project, plan_ref)
-            validation = validate_plan_bundle(bundle, repo_path)
-            if validation.valid or force_stale_plan:
-                if not validation.valid:
-                    for warning in validation.warnings:
-                        console.print(f"[yellow]{warning}[/yellow]")
-                    console.print("[yellow]Applying stale plan because --force-stale-plan was set.[/yellow]")
-                plans = bundle_to_generation_plans(bundle)
-                console.print(f"[bold green]Loaded saved plan:[/bold green] {loaded_path}")
-                console.print("[cyan]Skipping pre-scan and LLM generation.[/cyan]")
-                result = agent.apply_saved_plans(
-                    plans,
-                    base=base,
-                    head=head,
-                    verify=True,
-                    repair_iters=repair,
-                    refresh_runtime=True,
-                    runtime_mode='per-test',
-                    confirm_pr_scan=True,
-                    keep_failing_tests=keep_failing_tests,
-                    pytest_args=pytest_args,
-                    generation_strategy=strategy,
-                    llm_required=llm_required,
-                    llm_temperature=llm_temperature,
-                    llm_max_tokens=llm_max_tokens,
-                    change_source=source,
-                    partial_rollback=partial_rollback,
-                    pytest_stream=pytest_stream,
-                )
-                _render_generation(agent, result)
-                return
-            for warning in validation.warnings:
-                console.print(f"[yellow]{warning}[/yellow]")
-            console.print("[yellow]Saved plan is stale. Re-run plan or use --force-stale-plan. Generating fresh apply flow instead.[/yellow]")
-        except FileNotFoundError:
-            console.print("[yellow]No saved plan found. Generating fresh apply flow.[/yellow]")
-    result = agent.generate(
+    try:
+        bundle, loaded_path = load_plan_bundle(project, plan_ref)
+    except FileNotFoundError:
+        console.print(f"[bold red]No saved plan found for project `{project}`.[/bold red]")
+        console.print(f"Run [cyan]softgnn plan --project {project}[/cyan] first, or use [cyan]softgnn generate --project {project}[/cyan] for plan+apply.")
+        return
+    validation = validate_plan_bundle(bundle, repo_path)
+    if not validation.valid and not force_stale_plan:
+        for warning in validation.warnings:
+            console.print(f"[yellow]{warning}[/yellow]")
+        console.print("[bold red]Saved plan is stale; apply stopped without generating fresh tests.[/bold red]")
+        console.print(f"Run [cyan]softgnn plan --project {project}[/cyan] again, use [cyan]softgnn generate --project {project}[/cyan], or pass [cyan]--force-stale-plan[/cyan].")
+        return
+    if not validation.valid:
+        for warning in validation.warnings:
+            console.print(f"[yellow]{warning}[/yellow]")
+        console.print("[yellow]Applying stale plan because --force-stale-plan was set.[/yellow]")
+    plans = bundle_to_generation_plans(bundle)
+    console.print(f"[bold green]Loaded saved plan:[/bold green] {loaded_path}")
+    console.print("[cyan]Skipping pre-scan and LLM generation.[/cyan]")
+    result = agent.apply_saved_plans(
+        plans,
         base=base,
         head=head,
-        mode='patch',
-        max_targets=max_targets,
-        target_id=target,
-        source_file=source_file,
         verify=True,
         repair_iters=repair,
         refresh_runtime=True,

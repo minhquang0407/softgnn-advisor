@@ -77,6 +77,8 @@ class TestGenerationResult:
     pre_missing_coverage_count: int = 0
     post_missing_coverage_count: int | None = None
     verification_results: list = field(default_factory=list)
+    apply_run_path: str | None = None
+    apply_run_id: str | None = None
 
 
 class TestGenerationAgent:
@@ -87,7 +89,7 @@ class TestGenerationAgent:
         self.llm_config = load_llm_config(provider=llm_provider, base_url=llm_base_url, model=llm_model, api_key=llm_api_key, timeout=llm_timeout)
         self.llm_provider = build_llm_provider(self.llm_config)
 
-    def generate(self, base='main', head='HEAD', mode='plan', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto', partial_rollback=True, pytest_stream=True):
+    def generate(self, base='main', head='HEAD', mode='plan', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto', partial_rollback=True, pytest_stream=True, failure_feedback=None):
         if mode not in ('plan', 'patch'):
             raise ValueError("mode must be 'plan' or 'patch'")
         if generation_strategy not in ('template', 'llm', 'auto'):
@@ -103,7 +105,7 @@ class TestGenerationAgent:
             targets = [TestGenerationTarget(target_id, source_file, 'explicit target override', 999.0, ['explicit user/CLI target'], self._suggest_test_file(source_file))]
         else:
             targets = self._rank_targets(scan)[:max_targets]
-        plans = [self._build_plan(target, generation_strategy, warnings, llm_required, llm_temperature, llm_max_tokens) for target in targets]
+        plans = [self._build_plan(target, generation_strategy, warnings, llm_required, llm_temperature, llm_max_tokens, failure_feedback=failure_feedback) for target in targets]
         files_written = []
         pytest_returncode = None
         pytest_output = ''
@@ -182,11 +184,11 @@ class TestGenerationAgent:
                 return node.source_file
         return None
 
-    def _build_plan(self, target, generation_strategy='template', warnings=None, llm_required=False, llm_temperature=0.1, llm_max_tokens=4096):
+    def _build_plan(self, target, generation_strategy='template', warnings=None, llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, failure_feedback=None):
         warnings = warnings if warnings is not None else []
         context = self._collect_source_context(target)
         if generation_strategy in ('llm', 'auto'):
-            llm_plan = self._try_build_llm_plan(target, context, warnings, llm_required, llm_temperature, llm_max_tokens)
+            llm_plan = self._try_build_llm_plan(target, context, warnings, llm_required, llm_temperature, llm_max_tokens, failure_feedback=failure_feedback)
             if llm_plan:
                 return llm_plan
         function_name = target.node_id.replace('FUNC:', '')
@@ -196,7 +198,7 @@ class TestGenerationAgent:
         rationale = f"Generated semantic test because {target.node_id} has missing coverage: {target.reason}."
         return GeneratedTestPlan(target.node_id, test_file, [test_name], rationale, code, assumptions, target.source_file)
 
-    def _try_build_llm_plan(self, target, context, warnings, llm_required, llm_temperature, llm_max_tokens):
+    def _try_build_llm_plan(self, target, context, warnings, llm_required, llm_temperature, llm_max_tokens, failure_feedback=None):
         if not getattr(self.llm_provider, 'available', False):
             message = 'LLM provider not configured; falling back to template generation.'
             if llm_required:
@@ -205,7 +207,7 @@ class TestGenerationAgent:
             return None
         request = LLMRequest(
             system_prompt=self._llm_generation_system_prompt(),
-            user_prompt=self._llm_generation_user_prompt(target, context),
+            user_prompt=self._llm_generation_user_prompt(target, context, failure_feedback=failure_feedback),
             temperature=llm_temperature,
             max_tokens=llm_max_tokens,
         )
@@ -231,11 +233,12 @@ class TestGenerationAgent:
     def _llm_generation_system_prompt(self):
         return """You are SoftGNN's test generation assistant. Generate concise, deterministic pytest tests only. Return exactly one JSON object and no markdown. Never modify production code. Tests must write only under tmp_path if file IO is needed. Use the provided source context exactly: do not invent constructor argument names, method names, imports, or return shapes. If a module has import-time side effects, avoid importing it until mocks are installed or mock dependency modules via sys.modules first. Mock heavy dependencies, training loops, GPU/CUDA, network, databases, Streamlit runtime, and external services."""
 
-    def _llm_generation_user_prompt(self, target, context):
+    def _llm_generation_user_prompt(self, target, context, failure_feedback=None):
         existing_tests = self._read_text(os.path.join(self.repo_path, (target.suggested_file or self._suggest_test_file(target.source_file)).replace('/', os.sep)))
         qualname = target.node_id.replace('FUNC:', '')
         snippet = self._target_source_snippet(qualname, context)
         focused_context = self._focused_source_context(qualname, context)
+        feedback_text = self._format_failure_feedback(target.node_id, failure_feedback)
         return f"""
 Return JSON with this schema:
 {{
@@ -276,6 +279,11 @@ Existing tests in suggested file:
 {existing_tests[-6000:] if existing_tests else '# no existing tests'}
 ```
 
+Failure feedback from previous apply attempt, if any:
+```text
+{feedback_text}
+```
+
 Constraints:
 - Return JSON only.
 - test_file must be under tests/.
@@ -288,6 +296,29 @@ Constraints:
 - If testing a module with import-time side effects, install mocks before importing the module under test.
 - Multi-line `with` statements must use parentheses, e.g. `with (patch(...), patch(...)):`; never leave a line ending in a bare comma.
 """.strip()
+
+    def _format_failure_feedback(self, target_id, failure_feedback):
+        if not failure_feedback:
+            return '-'
+        item = failure_feedback.get(target_id) if isinstance(failure_feedback, dict) else None
+        if not item:
+            return '-'
+        parts = [
+            'Previous generated test for this target failed during apply.',
+            f"Status: {item.get('status', '-')}",
+            f"Test file: {item.get('test_file', '-')}",
+            f"Repair attempts: {item.get('repair_attempts', 0)}",
+        ]
+        previous_code = item.get('previous_generated_code') or item.get('last_generated_code') or ''
+        pytest_output = item.get('pytest_output_tail') or item.get('pytest_output') or ''
+        if previous_code:
+            parts.append('Previous generated code:')
+            parts.append(previous_code[-4000:])
+        if pytest_output:
+            parts.append('Pytest failure output:')
+            parts.append(pytest_output[-4000:])
+        parts.append('Generate a revised test that avoids repeating the previous failure.')
+        return '\n'.join(parts)
 
     def _target_source_snippet(self, qualname, context):
         parts = qualname.split('.')
@@ -670,7 +701,12 @@ def {test_name}():
                 if confirm_pr_scan:
                     post_scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True, change_source=change_source)
                     post_missing_count = len(post_scan.missing_coverage)
-        return TestGenerationResult([], plans, files_written, pytest_returncode, pytest_output, warnings, 'patch', failures, repair_attempts, rolled_back, runtime_result, post_scan, 0, post_missing_count, verification_results)
+        result = TestGenerationResult([], plans, files_written, pytest_returncode, pytest_output, warnings, 'patch', failures, repair_attempts, rolled_back, runtime_result, post_scan, 0, post_missing_count, verification_results)
+        if verification_results:
+            run_path, run_id = self._persist_apply_run(result)
+            result.apply_run_path = run_path
+            result.apply_run_id = run_id
+        return result
 
     def _apply_plans(self, plans, warnings):
         written = []
@@ -817,6 +853,61 @@ def {test_name}():
             if syntax:
                 failures.append(PytestFailure('-', syntax.group(1), syntax.group(2), output[-2000:]))
         return failures
+
+    def _apply_feedback_from_result(self, result):
+        feedback = {}
+        for item in result.verification_results or []:
+            if item.status not in {'rolled_back', 'kept_failing', 'batch_rolled_back', 'failed_pending_batch_rollback'}:
+                continue
+            plan = next((p for p in result.plans if p.target_id == item.target_id), None)
+            feedback[item.target_id] = {
+                'target_id': item.target_id,
+                'source_file': getattr(plan, 'source_file', ''),
+                'test_file': item.test_file,
+                'status': item.status,
+                'repair_attempts': len(item.repair_attempts),
+                'pytest_returncode': item.returncode,
+                'pytest_output_tail': (item.output or '')[-4000:],
+                'previous_generated_code': getattr(plan, 'code', ''),
+            }
+        return feedback
+
+    def _persist_apply_run(self, result):
+        from datetime import datetime, timezone
+        from softgnn_advisor.config.settings import get_project_paths
+        run_id = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        paths = get_project_paths(self.project)
+        apply_dir = Path(paths['PROJECT_DIR']) / 'apply_runs' / run_id
+        apply_dir.mkdir(parents=True, exist_ok=True)
+        plan_by_target = {plan.target_id: plan for plan in result.plans}
+        rows = []
+        for item in result.verification_results or []:
+            plan = plan_by_target.get(item.target_id)
+            rows.append({
+                'target_id': item.target_id,
+                'source_file': getattr(plan, 'source_file', ''),
+                'test_file': item.test_file,
+                'pytest_target': item.pytest_target,
+                'status': item.status,
+                'repair_attempts': len(item.repair_attempts),
+                'pytest_returncode': item.returncode,
+                'pytest_output_tail': (item.output or '')[-4000:],
+                'previous_generated_code': getattr(plan, 'code', ''),
+            })
+        payload = {
+            'run_id': run_id,
+            'project': self.project,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'summary': {
+                'kept': sum(1 for row in rows if row['status'] == 'kept'),
+                'rolled_back': sum(1 for row in rows if row['status'] in {'rolled_back', 'batch_rolled_back'}),
+                'kept_failing': sum(1 for row in rows if row['status'] == 'kept_failing'),
+            },
+            'results': rows,
+        }
+        path = apply_dir / 'result.json'
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
+        return str(path), run_id
 
     def _repair_generated_tests(self, plans, pytest_output, warnings, generation_strategy='template', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096):
         if generation_strategy in ('llm', 'auto') and getattr(self.llm_provider, 'available', False):
@@ -1021,6 +1112,8 @@ Constraints:
             ]
         if result.files_written:
             lines += ['## Files Written', ''] + [f'- `{f}`' for f in result.files_written] + ['']
+        if result.apply_run_path:
+            lines += ['## Apply Run', '', f'- Result: `{result.apply_run_path}`', '']
         if result.verification_results:
             lines += ['## Verification Results', '', '| Test file | Target | Status | Repairs |', '|---|---|---|---|']
             for item in result.verification_results:

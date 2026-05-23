@@ -179,6 +179,7 @@ def _git_head(repo_path):
 def bundle_to_generation_plans(bundle):
     from softgnn_advisor.core.test_generation_agent import GeneratedTestPlan
     plans = []
+    targets_by_id = {target.get('node_id'): target for target in bundle.get('targets', [])}
     for item in bundle.get('plans', []):
         plan = GeneratedTestPlan(
             target_id=item.get('target_id'),
