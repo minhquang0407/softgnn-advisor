@@ -50,6 +50,17 @@ class RepairAttempt:
 
 
 @dataclass
+class PlanVerificationResult:
+    target_id: str
+    test_file: str
+    pytest_target: str
+    returncode: int | None
+    output: str
+    status: str
+    repair_attempts: list = field(default_factory=list)
+
+
+@dataclass
 class TestGenerationResult:
     targets: list
     plans: list
@@ -65,6 +76,7 @@ class TestGenerationResult:
     post_scan: object | None = None
     pre_missing_coverage_count: int = 0
     post_missing_coverage_count: int | None = None
+    verification_results: list = field(default_factory=list)
 
 
 class TestGenerationAgent:
@@ -75,7 +87,7 @@ class TestGenerationAgent:
         self.llm_config = load_llm_config(provider=llm_provider, base_url=llm_base_url, model=llm_model, api_key=llm_api_key, timeout=llm_timeout)
         self.llm_provider = build_llm_provider(self.llm_config)
 
-    def generate(self, base='main', head='HEAD', mode='plan', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto'):
+    def generate(self, base='main', head='HEAD', mode='plan', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto', partial_rollback=True, pytest_stream=True):
         if mode not in ('plan', 'patch'):
             raise ValueError("mode must be 'plan' or 'patch'")
         if generation_strategy not in ('template', 'llm', 'auto'):
@@ -97,6 +109,7 @@ class TestGenerationAgent:
         pytest_output = ''
         failures = []
         repair_attempts = []
+        verification_results = []
         rolled_back = False
         runtime_result = None
         post_scan = None
@@ -107,31 +120,28 @@ class TestGenerationAgent:
             snapshots = self._snapshot_plans(plans)
             files_written = self._apply_plans(plans, warnings)
             if verify and files_written:
-                pytest_files = self._pytest_targets(files_written, pytest_args)
-                pytest_returncode, pytest_output = self._run_pytest(pytest_files)
-                failures = self._parse_pytest_failures(pytest_output) if pytest_returncode else []
-                remaining_repairs = max(0, int(repair_iters or 0))
-                iteration = 0
-                while pytest_returncode and remaining_repairs > 0:
-                    iteration += 1
-                    action = self._repair_generated_tests(plans, pytest_output, warnings, generation_strategy, llm_required, llm_temperature, llm_max_tokens)
-                    pytest_returncode, pytest_output = self._run_pytest(pytest_files)
-                    repair_attempts.append(RepairAttempt(iteration, action, pytest_returncode, pytest_output))
-                    failures = self._parse_pytest_failures(pytest_output) if pytest_returncode else []
-                    remaining_repairs -= 1
-                    if action == 'no-op':
-                        break
-                if pytest_returncode and not keep_failing_tests:
-                    self._rollback_snapshots(snapshots)
-                    rolled_back = True
-                    warnings.append('Rolled back generated tests because pytest failed and --keep-failing-tests was not set.')
-                    files_written = []
-                elif pytest_returncode == 0 and refresh_runtime:
-                    runtime_result = RuntimeCoverageMapper(self.project, repo_path=self.repo_path).map_runtime_coverage(pytest_args=pytest_args or 'tests', mode=runtime_mode, persist=True)
+                verification_results, kept_files, pytest_returncode, pytest_output, failures, repair_attempts, rolled_back = self._verify_written_plans(
+                    plans,
+                    snapshots,
+                    warnings,
+                    repair_iters=repair_iters,
+                    keep_failing_tests=keep_failing_tests,
+                    pytest_args=pytest_args,
+                    generation_strategy=generation_strategy,
+                    llm_required=llm_required,
+                    llm_temperature=llm_temperature,
+                    llm_max_tokens=llm_max_tokens,
+                    partial_rollback=partial_rollback,
+                    pytest_stream=pytest_stream,
+                )
+                files_written = kept_files
+                if kept_files and refresh_runtime:
+                    runtime_args = pytest_args or ' '.join(kept_files)
+                    runtime_result = RuntimeCoverageMapper(self.project, repo_path=self.repo_path).map_runtime_coverage(pytest_args=runtime_args, mode=runtime_mode, persist=True)
                     if confirm_pr_scan:
                         post_scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True, change_source=change_source)
                         post_missing_count = len(post_scan.missing_coverage)
-        return TestGenerationResult(targets, plans, files_written, pytest_returncode, pytest_output, warnings + scan.warnings, mode, failures, repair_attempts, rolled_back, runtime_result, post_scan, pre_missing_count, post_missing_count)
+        return TestGenerationResult(targets, plans, files_written, pytest_returncode, pytest_output, warnings + scan.warnings, mode, failures, repair_attempts, rolled_back, runtime_result, post_scan, pre_missing_count, post_missing_count, verification_results)
 
     def _rank_targets(self, scan):
         changed_by_id = {node.full_id: node for node in scan.changed_nodes}
@@ -276,6 +286,7 @@ Constraints:
 - Do not use subprocess, requests, urllib, socket, os.system, or shutil.rmtree.
 - Use real constructor signatures and real method names from focused context.
 - If testing a module with import-time side effects, install mocks before importing the module under test.
+- Multi-line `with` statements must use parentheses, e.g. `with (patch(...), patch(...)):`; never leave a line ending in a bare comma.
 """.strip()
 
     def _target_source_snippet(self, qualname, context):
@@ -623,7 +634,7 @@ def {test_name}():
     assert callable({fn_name})
 '''
 
-    def apply_saved_plans(self, plans, base='main', head='HEAD', verify=True, repair_iters=2, refresh_runtime=True, runtime_mode='per-test', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto'):
+    def apply_saved_plans(self, plans, base='main', head='HEAD', verify=True, repair_iters=2, refresh_runtime=True, runtime_mode='per-test', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto', partial_rollback=True, pytest_stream=True):
         warnings = []
         files_written = []
         pytest_returncode = None
@@ -634,34 +645,32 @@ def {test_name}():
         runtime_result = None
         post_scan = None
         post_missing_count = None
+        verification_results = []
         snapshots = self._snapshot_plans(plans)
         files_written = self._apply_plans(plans, warnings)
         if verify and files_written:
-            pytest_files = self._pytest_targets(files_written, pytest_args)
-            pytest_returncode, pytest_output = self._run_pytest(pytest_files)
-            failures = self._parse_pytest_failures(pytest_output) if pytest_returncode else []
-            remaining_repairs = max(0, int(repair_iters or 0))
-            iteration = 0
-            while pytest_returncode and remaining_repairs > 0:
-                iteration += 1
-                action = self._repair_generated_tests(plans, pytest_output, warnings, generation_strategy, llm_required, llm_temperature, llm_max_tokens)
-                pytest_returncode, pytest_output = self._run_pytest(pytest_files)
-                repair_attempts.append(RepairAttempt(iteration, action, pytest_returncode, pytest_output))
-                failures = self._parse_pytest_failures(pytest_output) if pytest_returncode else []
-                remaining_repairs -= 1
-                if action == 'no-op':
-                    break
-            if pytest_returncode and not keep_failing_tests:
-                self._rollback_snapshots(snapshots)
-                rolled_back = True
-                warnings.append('Rolled back generated tests because pytest failed and --keep-failing-tests was not set.')
-                files_written = []
-            elif pytest_returncode == 0 and refresh_runtime:
-                runtime_result = RuntimeCoverageMapper(self.project, repo_path=self.repo_path).map_runtime_coverage(pytest_args=pytest_args or 'tests', mode=runtime_mode, persist=True)
+            verification_results, kept_files, pytest_returncode, pytest_output, failures, repair_attempts, rolled_back = self._verify_written_plans(
+                plans,
+                snapshots,
+                warnings,
+                repair_iters=repair_iters,
+                keep_failing_tests=keep_failing_tests,
+                pytest_args=pytest_args,
+                generation_strategy=generation_strategy,
+                llm_required=llm_required,
+                llm_temperature=llm_temperature,
+                llm_max_tokens=llm_max_tokens,
+                partial_rollback=partial_rollback,
+                pytest_stream=pytest_stream,
+            )
+            files_written = kept_files
+            if kept_files and refresh_runtime:
+                runtime_args = pytest_args or ' '.join(kept_files)
+                runtime_result = RuntimeCoverageMapper(self.project, repo_path=self.repo_path).map_runtime_coverage(pytest_args=runtime_args, mode=runtime_mode, persist=True)
                 if confirm_pr_scan:
                     post_scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True, change_source=change_source)
                     post_missing_count = len(post_scan.missing_coverage)
-        return TestGenerationResult([], plans, files_written, pytest_returncode, pytest_output, warnings, 'patch', failures, repair_attempts, rolled_back, runtime_result, post_scan, 0, post_missing_count)
+        return TestGenerationResult([], plans, files_written, pytest_returncode, pytest_output, warnings, 'patch', failures, repair_attempts, rolled_back, runtime_result, post_scan, 0, post_missing_count, verification_results)
 
     def _apply_plans(self, plans, warnings):
         written = []
@@ -710,6 +719,79 @@ def {test_name}():
             f'# <softgnn-generated target="{plan.target_id}" end>\n'
         )
 
+    def _plan_rel_path(self, plan):
+        rel_path = plan.test_file.replace('\\', '/')
+        if not rel_path.startswith('tests/'):
+            rel_path = 'tests/' + os.path.basename(rel_path)
+        return rel_path
+
+    def _verify_written_plans(self, plans, snapshots, warnings, repair_iters=0, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, partial_rollback=True, pytest_stream=True):
+        verification_results = []
+        all_outputs = []
+        all_failures = []
+        all_repairs = []
+        kept_files = []
+        any_failed = False
+        written_files = set(self._plan_rel_path(plan) for plan in plans)
+        for plan in plans:
+            rel_path = self._plan_rel_path(plan)
+            if rel_path not in written_files:
+                continue
+            pytest_target = rel_path if not pytest_args else pytest_args
+            print(f'\n[softgnn] Running pytest for {rel_path} ...', flush=True)
+            returncode, output = self._run_pytest(self._pytest_targets([rel_path], pytest_target), stream=pytest_stream)
+            all_outputs.append(output)
+            plan_repairs = []
+            remaining_repairs = max(0, int(repair_iters or 0))
+            iteration = 0
+            while returncode and remaining_repairs > 0:
+                iteration += 1
+                action = self._repair_generated_tests([plan], output, warnings, generation_strategy, llm_required, llm_temperature, llm_max_tokens)
+                print(f'[softgnn] Repair {iteration} for {rel_path}: {action}', flush=True)
+                returncode, output = self._run_pytest(self._pytest_targets([rel_path], pytest_target), stream=pytest_stream)
+                attempt = RepairAttempt(iteration, action, returncode, output)
+                plan_repairs.append(attempt)
+                all_repairs.append(attempt)
+                all_outputs.append(output)
+                remaining_repairs -= 1
+                if action == 'no-op':
+                    break
+            if returncode == 0:
+                status = 'kept'
+                kept_files.append(rel_path)
+                print(f'[softgnn] PASSED -> kept {rel_path}', flush=True)
+            else:
+                any_failed = True
+                all_failures.extend(self._parse_pytest_failures(output))
+                if keep_failing_tests:
+                    status = 'kept_failing'
+                    kept_files.append(rel_path)
+                    print(f'[softgnn] FAILED -> kept for debugging {rel_path}', flush=True)
+                elif partial_rollback:
+                    status = 'rolled_back'
+                    self._rollback_plan_snapshot(plan, snapshots)
+                    print(f'[softgnn] FAILED -> rolled back {rel_path}', flush=True)
+                else:
+                    status = 'failed_pending_batch_rollback'
+                    print(f'[softgnn] FAILED -> pending batch rollback {rel_path}', flush=True)
+            verification_results.append(PlanVerificationResult(plan.target_id, rel_path, str(pytest_target), returncode, output, status, plan_repairs))
+        if any_failed and not keep_failing_tests and not partial_rollback:
+            self._rollback_snapshots(snapshots)
+            kept_files = []
+            for result in verification_results:
+                if result.status in {'kept', 'failed_pending_batch_rollback'}:
+                    result.status = 'batch_rolled_back'
+            warnings.append('Batch rollback complete: all generated tests were restored because verification failed.')
+        elif any_failed and not keep_failing_tests and partial_rollback:
+            warnings.append('Partial rollback complete: kept passing generated tests and rolled back failing generated tests.')
+        pytest_returncode = 1 if any_failed else 0
+        return verification_results, sorted(set(kept_files)), pytest_returncode, '\n'.join(all_outputs), all_failures, all_repairs, any_failed and not keep_failing_tests
+
+    def _rollback_plan_snapshot(self, plan, snapshots):
+        rel_path = self._plan_rel_path(plan)
+        abs_path = os.path.join(self.repo_path, rel_path.replace('/', os.sep))
+        self._rollback_snapshots({abs_path: snapshots.get(abs_path)})
+
     def _pytest_targets(self, files_written, pytest_args):
         if pytest_args:
             if isinstance(pytest_args, (list, tuple)):
@@ -745,9 +827,13 @@ def {test_name}():
         actions = []
         if 'SyntaxError' in pytest_output:
             for plan in plans:
+                original_code = plan.code
                 if '\ndef\n' in plan.code or re.search(r'\ndef\s+\n\s*test_', plan.code):
                     plan.code = re.sub(r'\ndef\s+\n\s*(test_)', r'\ndef \1', plan.code)
                     actions.append('normalized malformed function definition')
+                plan.code = self._repair_multiline_with_context_managers(plan.code)
+                if plan.code != original_code:
+                    actions.append('normalized multi-line with context managers')
         if 'GradScaler' in pytest_output and "GradScaler" in ''.join(p.code for p in plans):
             actions.append('kept CPU-safe GradScaler mock')
         if not actions:
@@ -755,6 +841,39 @@ def {test_name}():
             return 'no-op'
         self._rewrite_generated_blocks(plans)
         return '; '.join(sorted(set(actions)))
+
+    def _repair_multiline_with_context_managers(self, code):
+        lines = code.splitlines()
+        repaired = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            if stripped.startswith('with ') and stripped.endswith(',') and '(' not in stripped.split('with ', 1)[1].split(',', 1)[0]:
+                indent = line[:len(line) - len(line.lstrip())]
+                context_lines = [stripped[5:]]
+                i += 1
+                while i < len(lines):
+                    current = lines[i]
+                    current_stripped = current.strip()
+                    context_lines.append(current_stripped)
+                    if current_stripped.endswith(':'):
+                        break
+                    i += 1
+                if context_lines and context_lines[-1].endswith(':'):
+                    context_lines[-1] = context_lines[-1][:-1]
+                    repaired.append(f'{indent}with (')
+                    for idx, ctx in enumerate(context_lines):
+                        suffix = '' if idx == len(context_lines) - 1 else ','
+                        repaired.append(f'{indent}    {ctx}{suffix}')
+                    repaired.append(f'{indent}):')
+                else:
+                    repaired.append(line)
+                    repaired.extend(lines[i - len(context_lines) + 1:i + 1])
+            else:
+                repaired.append(line)
+            i += 1
+        return '\n'.join(repaired)
 
     def _try_llm_repair(self, plans, pytest_output, warnings, llm_required, llm_temperature, llm_max_tokens):
         if not plans:
@@ -820,6 +939,7 @@ Constraints:
 - Keep all code as pytest test code only.
 - Preserve or improve semantic assertions.
 - Do not touch production code.
+- Multi-line `with` statements must use parentheses, e.g. `with (patch(...), patch(...)):`; never leave a line ending in a bare comma.
 - Return JSON only.
 """.strip()
 
@@ -843,8 +963,29 @@ Constraints:
                 content = content.rstrip() + '\n\n\n' + replacement
             Path(abs_path).write_text(content, encoding='utf-8')
 
-    def _run_pytest(self, files):
-        cmd = [sys.executable, '-m', 'pytest', '-q'] + files
+    def _run_pytest(self, files, stream=False):
+        cmd = [sys.executable, '-m', 'pytest']
+        if stream:
+            cmd += ['-vv', '--tb=short']
+        else:
+            cmd += ['-q']
+        cmd += files
+        if stream:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=self.repo_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+            )
+            output_parts = []
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                print(line, end='', flush=True)
+                output_parts.append(line)
+            return proc.wait(), ''.join(output_parts)
         proc = subprocess.run(cmd, cwd=self.repo_path, capture_output=True, text=True, encoding='utf-8', errors='replace')
         return proc.returncode, (proc.stdout or '') + (proc.stderr or '')
 
@@ -880,6 +1021,11 @@ Constraints:
             ]
         if result.files_written:
             lines += ['## Files Written', ''] + [f'- `{f}`' for f in result.files_written] + ['']
+        if result.verification_results:
+            lines += ['## Verification Results', '', '| Test file | Target | Status | Repairs |', '|---|---|---|---|']
+            for item in result.verification_results:
+                lines.append(f'| `{item.test_file}` | `{item.target_id}` | `{item.status}` | `{len(item.repair_attempts)}` |')
+            lines.append('')
         if result.rolled_back:
             lines += ['## Rollback', '', 'Generated edits were rolled back because verification failed.', '']
         if result.pytest_returncode is not None:

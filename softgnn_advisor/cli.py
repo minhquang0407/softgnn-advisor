@@ -1221,7 +1221,9 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--repair', default=2, show_default=True)
 @click.option('--pytest', 'pytest_args', default=None, help='Override pytest args')
 @click.option('--keep-failing-tests/--rollback-failing-tests', default=False, show_default=True)
-def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, pytest_args, keep_failing_tests):
+@click.option('--partial-rollback/--batch-rollback', default=True, show_default=True, help='Keep passing generated tests and roll back only failing generated tests')
+@click.option('--pytest-stream/--no-pytest-stream', default=True, show_default=True, help='Stream pytest output while verification runs')
+def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, pytest_args, keep_failing_tests, partial_rollback, pytest_stream):
     """Beginner apply: generate LLM tests by default, then patch, verify, map runtime, and confirm."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Writes: tests only | Pytest: yes | Runtime map: yes[/cyan]")
@@ -1269,6 +1271,8 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
                     llm_temperature=llm_temperature,
                     llm_max_tokens=llm_max_tokens,
                     change_source=source,
+                    partial_rollback=partial_rollback,
+                    pytest_stream=pytest_stream,
                 )
                 _render_generation(agent, result)
                 return
@@ -1296,6 +1300,8 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
         llm_temperature=llm_temperature,
         llm_max_tokens=llm_max_tokens,
         change_source=source,
+        partial_rollback=partial_rollback,
+        pytest_stream=pytest_stream,
     )
     _render_generation(agent, result)
 
