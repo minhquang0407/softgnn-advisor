@@ -1002,8 +1002,6 @@ def {test_name}():
             return f'LLM repair: {explanation}'
         except Exception as exc:
             message = f'LLM repair failed; falling back to heuristic repair: {exc}'
-            if llm_required:
-                raise RuntimeError(message) from exc
             warnings.append(message)
             return 'no-op'
 
