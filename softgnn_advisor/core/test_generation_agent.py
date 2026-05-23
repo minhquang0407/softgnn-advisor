@@ -775,7 +775,7 @@ def {test_name}():
             if rel_path not in written_files:
                 continue
             pytest_target = rel_path if not pytest_args else pytest_args
-            print(f'\n[softgnn] Running pytest for {rel_path} ...', flush=True)
+            self._print_status('RUN', f'Running pytest for {rel_path}', 'cyan')
             returncode, output = self._run_pytest(self._pytest_targets([rel_path], pytest_target), stream=pytest_stream)
             all_outputs.append(output)
             plan_repairs = []
@@ -784,7 +784,7 @@ def {test_name}():
             while returncode and remaining_repairs > 0:
                 iteration += 1
                 action = self._repair_generated_tests([plan], output, warnings, generation_strategy, llm_required, llm_temperature, llm_max_tokens)
-                print(f'[softgnn] Repair {iteration} for {rel_path}: {action}', flush=True)
+                self._print_status('REPAIR', f'Attempt {iteration} for {rel_path}: {action}', 'yellow')
                 returncode, output = self._run_pytest(self._pytest_targets([rel_path], pytest_target), stream=pytest_stream)
                 attempt = RepairAttempt(iteration, action, returncode, output)
                 plan_repairs.append(attempt)
@@ -796,21 +796,21 @@ def {test_name}():
             if returncode == 0:
                 status = 'kept'
                 kept_files.append(rel_path)
-                print(f'[softgnn] PASSED -> kept {rel_path}', flush=True)
+                self._print_status('PASS', f'Kept {rel_path}', 'green')
             else:
                 any_failed = True
                 all_failures.extend(self._parse_pytest_failures(output))
                 if keep_failing_tests:
                     status = 'kept_failing'
                     kept_files.append(rel_path)
-                    print(f'[softgnn] FAILED -> kept for debugging {rel_path}', flush=True)
+                    self._print_status('FAIL', f'Kept failing test for debugging: {rel_path}', 'magenta')
                 elif partial_rollback:
                     status = 'rolled_back'
                     self._rollback_plan_snapshot(plan, snapshots)
-                    print(f'[softgnn] FAILED -> rolled back {rel_path}', flush=True)
+                    self._print_status('ROLLBACK', f'Rolled back failing generated test: {rel_path}', 'red')
                 else:
                     status = 'failed_pending_batch_rollback'
-                    print(f'[softgnn] FAILED -> pending batch rollback {rel_path}', flush=True)
+                    self._print_status('FAIL', f'Pending batch rollback: {rel_path}', 'red')
             verification_results.append(PlanVerificationResult(plan.target_id, rel_path, str(pytest_target), returncode, output, status, plan_repairs))
         if any_failed and not keep_failing_tests and not partial_rollback:
             self._rollback_snapshots(snapshots)
@@ -823,6 +823,20 @@ def {test_name}():
             warnings.append('Partial rollback complete: kept passing generated tests and rolled back failing generated tests.')
         pytest_returncode = 1 if any_failed else 0
         return verification_results, sorted(set(kept_files)), pytest_returncode, '\n'.join(all_outputs), all_failures, all_repairs, any_failed and not keep_failing_tests
+
+    def _print_status(self, label, message, color='cyan'):
+        colors = {
+            'cyan': '\033[96m',
+            'green': '\033[92m',
+            'yellow': '\033[93m',
+            'red': '\033[91m',
+            'magenta': '\033[95m',
+        }
+        reset = '\033[0m'
+        bold = '\033[1m'
+        color_code = colors.get(color, colors['cyan'])
+        banner = f'{bold}{color_code}== SOFTGNN {label} =={reset}'
+        print(f'\n{banner} {color_code}{message}{reset}', flush=True)
 
     def _rollback_plan_snapshot(self, plan, snapshots):
         rel_path = self._plan_rel_path(plan)
