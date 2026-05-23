@@ -1,4 +1,4 @@
-﻿import ast
+import ast
 import json
 import os
 import pickle
@@ -9,11 +9,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import networkx as nx
-import torch
 
 from softgnn_advisor.config.settings import get_project_paths
 from softgnn_advisor.core.metadata_utils import load_metadata, save_metadata, utc_now_iso
-from softgnn_advisor.scripts.etl_run import convert_nx_to_pyg
+from softgnn_advisor.scripts.etl_run import HAS_GNN_DEPS, convert_nx_to_pyg
 
 
 @dataclass
@@ -257,14 +256,19 @@ class RuntimeCoverageMapper:
             self.graph.add_edge(edge.test_id, edge.target_id, type='executes_runtime')
         with open(str(self.graph_path), 'wb') as f:
             pickle.dump(self.graph, f, pickle.HIGHEST_PROTOCOL)
-        hetero_data, node_mapping = convert_nx_to_pyg(self.graph)
-        torch.save(hetero_data, str(self.pyg_path))
+        if HAS_GNN_DEPS:
+            import torch
+            hetero_data, node_mapping = convert_nx_to_pyg(self.graph)
+            torch.save(hetero_data, str(self.pyg_path))
+        else:
+            from softgnn_advisor.scripts.etl_run import build_node_mapping
+            node_mapping = build_node_mapping(self.graph)
         self._write_nodes_data(node_mapping)
         metadata = load_metadata(self.metadata_path)
         metadata.update({
             'runtime_coverage_mapped_at': utc_now_iso(),
             'runtime_coverage_edges': len(edges),
-            'gnn_retrain_required': True,
+            'gnn_retrain_required': HAS_GNN_DEPS,
         })
         save_metadata(self.metadata_path, metadata)
 

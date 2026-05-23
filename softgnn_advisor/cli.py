@@ -1,4 +1,4 @@
-﻿import click
+import click
 import os
 import sys
 from rich.console import Console
@@ -460,11 +460,17 @@ def triage(project, bug_description):
     """De xuat ky su phu hop nhat de sua mot Bug moi"""
     import pandas as pd
     import re
-    import torch
-    import torch_geometric.transforms as T
+    try:
+        import torch
+        import torch_geometric.transforms as T
+        from softgnn_advisor.core.ai.predicter import Predictor
+        from softgnn_advisor.core.ai.gnn_architecture import HGTLinkPrediction
+    except ImportError as exc:
+        raise click.ClickException(
+            "triage requires GNN dependencies and a trained model. Install with: "
+            "pip install \"softgnn-advisor[gnn]\""
+        ) from exc
     from softgnn_advisor.config.settings import get_project_paths
-    from softgnn_advisor.core.ai.predicter import Predictor
-    from softgnn_advisor.core.ai.gnn_architecture import HGTLinkPrediction
     from softgnn_advisor.core.file_filters import is_source_code_file, is_valid_developer_name
     from softgnn_advisor.core.metadata_utils import load_metadata
     from softgnn_advisor.core.developer_aliases import load_developer_aliases, resolve_developer_identity
@@ -715,8 +721,14 @@ def triage(project, bug_description):
 @click.option('--project', required=True, help='Ten du an can kiem tra')
 def inspect(project):
     """Kiem tra chat luong Do thi Tri thuc cua mot du an"""
-    import torch
-    import torch_geometric.transforms as T
+    try:
+        import torch
+        import torch_geometric.transforms as T
+    except ImportError as exc:
+        raise click.ClickException(
+            "inspect currently requires GNN artifacts. Install with: "
+            "pip install \"softgnn-advisor[gnn]\""
+        ) from exc
     import pandas as pd
     from softgnn_advisor.config.settings import get_project_paths
 
@@ -839,7 +851,13 @@ def inspect(project):
 def explain(project, developer):
     """Giai thich vi sao mot developer duoc de xuat"""
     import pandas as pd
-    import torch
+    try:
+        import torch
+    except ImportError as exc:
+        raise click.ClickException(
+            "explain currently requires GNN artifacts. Install with: "
+            "pip install \"softgnn-advisor[gnn]\""
+        ) from exc
     from collections import Counter, defaultdict
     from softgnn_advisor.config.settings import get_project_paths
     from softgnn_advisor.core.developer_aliases import load_developer_aliases, resolve_developer_identity
@@ -959,8 +977,14 @@ def explain(project, developer):
 @click.option('--project', required=True, help='Ten du an can kiem tra')
 def doctor(project):
     """Kiem tra moi truong, metadata va tinh hop le cua model/graph"""
-    import torch
-    import torch_geometric.transforms as T
+    try:
+        import torch
+        import torch_geometric.transforms as T
+        has_gnn_deps = True
+    except ImportError:
+        torch = None
+        T = None
+        has_gnn_deps = False
     from softgnn_advisor.config.settings import get_project_paths
     from softgnn_advisor.core.metadata_utils import compute_graph_schema_hash, load_metadata
 
@@ -976,11 +1000,15 @@ def doctor(project):
     def err(msg): console.print(f"[red][ERROR][/red] {msg}")
 
     ok(f"Python: {sys.version.split()[0]}")
-    ok(f"Torch: {torch.__version__}")
-    if torch.cuda.is_available():
-        ok(f"CUDA available: {torch.cuda.get_device_name(0)}")
+    if has_gnn_deps:
+        ok(f"Torch: {torch.__version__}")
+        if torch.cuda.is_available():
+            ok(f"CUDA available: {torch.cuda.get_device_name(0)}")
+        else:
+            warn("CUDA not available; CPU mode will be used")
     else:
-        warn("CUDA not available; CPU mode will be used")
+        warn("GNN dependencies not installed; deterministic/core features are available")
+        warn("Install GNN extras with: pip install \"softgnn-advisor\\[gnn]\"")
 
     for label, path in [
         ('nodes_data.csv', NODES_DATA_PATH),
@@ -1001,9 +1029,9 @@ def doctor(project):
         if metadata.get('train_finished_at'):
             ok(f"Training metadata found. Test AUC: {metadata.get('test_auc', 'N/A')}")
         else:
-            warn("No training metadata found. Run train after ETL.")
+            warn("No training metadata found. Run setup --train after installing GNN extras if you need GNN ranking.")
 
-    if os.path.exists(PYG_DATA_PATH):
+    if os.path.exists(PYG_DATA_PATH) and has_gnn_deps:
         try:
             data = torch.load(PYG_DATA_PATH, map_location='cpu', weights_only=False)
             current_hash = compute_graph_schema_hash(data)
@@ -1033,6 +1061,10 @@ def doctor(project):
                 warn("Commit -> File edges are sparse; Git ownership will be weak")
         except Exception as e:
             err(f"Could not load pyg_data.pt: {e}")
+    elif os.path.exists(PYG_DATA_PATH) and not has_gnn_deps:
+        warn("pyg_data.pt exists but cannot be inspected without GNN dependencies")
+    else:
+        warn("pyg_data.pt missing; this is expected for core-only setup without GNN extras")
 
     if not os.environ.get('HF_TOKEN'):
         warn("HF_TOKEN not set; HuggingFace downloads may be slower or rate-limited")
@@ -1073,7 +1105,6 @@ def simple_setup(repo_path, project, train):
     project = project or _default_project_name(repo_path)
     console.rule(f"[bold cyan]SoftGNN Setup - Project: {project}")
     from softgnn_advisor.scripts.etl_run import run_etl_pipeline
-    from softgnn_advisor.scripts.train_model import run_optimization
     from softgnn_advisor.core.change_provider import build_filesystem_snapshot, save_filesystem_snapshot, snapshot_path_for_project
 
     run_etl_pipeline(repo_path, project)
@@ -1081,6 +1112,13 @@ def simple_setup(repo_path, project, train):
     save_filesystem_snapshot(snapshot_path_for_project(project), snapshot)
     console.print("[bold green]Graph and filesystem snapshot saved.[/bold green]")
     if train:
+        try:
+            from softgnn_advisor.scripts.train_model import run_optimization
+        except ImportError as exc:
+            raise click.ClickException(
+                "Training requires GNN dependencies. Install with: pip install \"softgnn-advisor[gnn]\" "
+                "or pip install \"softgnn-advisor[all]\""
+            ) from exc
         run_optimization(project)
         console.print("[bold green]Training completed.[/bold green]")
     else:
@@ -1124,14 +1162,18 @@ def simple_scan(project, repo_path, base, head, source, mode, max_impact):
 @click.option('--target', default=None, help='Target id, e.g. FUNC:foo')
 @click.option('--file', 'source_file', default=None, help='Source file for explicit target')
 @click.option('--max-targets', default=3, show_default=True)
-@click.option('--strategy', type=click.Choice(['template', 'llm', 'auto']), default='auto', show_default=True)
+@click.option('--strategy', type=click.Choice(['template', 'llm', 'auto']), default='llm', show_default=True)
+@click.option('--no-llm', is_flag=True, help='Do not call LLM; generate template tests')
 @click.option('--source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True)
-@click.option('--llm-required/--llm-fallback', default=False, show_default=True)
+@click.option('--llm-required/--llm-fallback', default=True, show_default=True)
 @click.option('--save-plan/--no-save-plan', default=True, show_default=True)
-def simple_plan(project, repo_path, base, head, target, source_file, max_targets, strategy, source, llm_required, save_plan):
-    """Beginner plan: scan, generate proposed tests, and save a reusable plan bundle."""
+def simple_plan(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, source, llm_required, save_plan):
+    """Beginner plan: scan, generate proposed tests with LLM by default, and save a reusable plan bundle."""
     repo_path = repo_path or _repo_path_for_project(project)
-    console.print("[cyan]LLM: strategy-dependent | Writes: plan cache only | Pytest: not run[/cyan]")
+    if no_llm:
+        strategy = 'template'
+        llm_required = False
+    console.print("[cyan]LLM: enabled by default | Writes: plan cache only | Pytest: not run[/cyan]")
     from softgnn_advisor.core.test_generation_agent import TestGenerationAgent
     from softgnn_advisor.core.plan_cache import save_plan_bundle
     agent = TestGenerationAgent(project, repo_path=repo_path)
@@ -1166,18 +1208,39 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--target', default=None, help='Target id for fresh generation')
 @click.option('--file', 'source_file', default=None, help='Source file for explicit target')
 @click.option('--max-targets', default=3, show_default=True)
-@click.option('--strategy', type=click.Choice(['template', 'llm', 'auto']), default='auto', show_default=True)
+@click.option('--strategy', type=click.Choice(['template', 'llm', 'auto']), default='llm', show_default=True)
+@click.option('--no-llm', is_flag=True, help='Do not call LLM when generating fresh because no saved plan exists')
+@click.option('--llm-provider', default=None, help='LLM provider override, e.g. openai-compatible')
+@click.option('--llm-model', default=None, help='LLM model override')
+@click.option('--llm-base-url', default=None, help='LLM base URL override')
+@click.option('--llm-api-key-env', default=None, help='Name of env var containing the LLM API key')
+@click.option('--llm-required/--llm-fallback', default=False, show_default=True, help='Fail if LLM is unavailable instead of falling back to templates')
+@click.option('--llm-temperature', default=0.1, show_default=True, help='LLM temperature')
+@click.option('--llm-max-tokens', default=4096, show_default=True, help='LLM max output tokens')
 @click.option('--source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True)
 @click.option('--repair', default=2, show_default=True)
 @click.option('--pytest', 'pytest_args', default=None, help='Override pytest args')
 @click.option('--keep-failing-tests/--rollback-failing-tests', default=False, show_default=True)
-def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, source, repair, pytest_args, keep_failing_tests):
-    """Beginner apply: reuse reviewed plan when valid, then patch, verify, map runtime, and confirm."""
+def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, pytest_args, keep_failing_tests):
+    """Beginner apply: generate LLM tests by default, then patch, verify, map runtime, and confirm."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Writes: tests only | Pytest: yes | Runtime map: yes[/cyan]")
     from softgnn_advisor.core.test_generation_agent import TestGenerationAgent
     from softgnn_advisor.core.plan_cache import bundle_to_generation_plans, load_plan_bundle, validate_plan_bundle
-    agent = TestGenerationAgent(project, repo_path=repo_path)
+    if no_llm:
+        strategy = 'template' if strategy == 'llm' else strategy
+        llm_required = False
+    else:
+        llm_required = True if strategy == 'llm' else llm_required
+    llm_api_key = os.getenv(llm_api_key_env) if llm_api_key_env else None
+    agent = TestGenerationAgent(
+        project,
+        repo_path=repo_path,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
+        llm_api_key=llm_api_key,
+    )
     if not ignore_plan:
         try:
             bundle, loaded_path = load_plan_bundle(project, plan_ref)
@@ -1202,6 +1265,9 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
                     keep_failing_tests=keep_failing_tests,
                     pytest_args=pytest_args,
                     generation_strategy=strategy,
+                    llm_required=llm_required,
+                    llm_temperature=llm_temperature,
+                    llm_max_tokens=llm_max_tokens,
                     change_source=source,
                 )
                 _render_generation(agent, result)
@@ -1226,6 +1292,9 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
         keep_failing_tests=keep_failing_tests,
         pytest_args=pytest_args,
         generation_strategy=strategy,
+        llm_required=llm_required,
+        llm_temperature=llm_temperature,
+        llm_max_tokens=llm_max_tokens,
         change_source=source,
     )
     _render_generation(agent, result)

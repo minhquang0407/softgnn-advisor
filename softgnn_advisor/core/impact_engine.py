@@ -1,9 +1,8 @@
-﻿import os
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 
 import pandas as pd
-import torch
 
 from softgnn_advisor.config.settings import get_project_paths
 from softgnn_advisor.core.file_filters import is_source_code_file
@@ -49,13 +48,12 @@ class ImpactEngine:
         self.nodes_data_path = self.paths['NODES_DATA_PATH']
         self.metadata_path = self.paths['METADATA_PATH']
         self.model_path = self.paths['MODEL_PATH']
-        if not os.path.exists(self.pyg_data_path) or not os.path.exists(self.nodes_data_path):
-            raise FileNotFoundError(f"Data not found for project '{project}'. Run softgnn prepare first.")
+        if not os.path.exists(self.nodes_data_path):
+            raise FileNotFoundError(f"Data not found for project '{project}'. Run softgnn setup first.")
 
         self.df = pd.read_csv(self.nodes_data_path)
         self.df['name_str'] = self.df['name'].astype(str)
         self.df['id_str'] = self.df['id'].astype(str)
-        self.data = torch.load(self.pyg_data_path, map_location='cpu', weights_only=False)
         self.metadata = load_metadata(self.metadata_path)
         self.source_path = self.metadata.get('source_path')
 
@@ -70,12 +68,22 @@ class ImpactEngine:
             self.full_id_by_key[key] = str(row['id'])
             self.key_by_full_id[str(row['id'])] = key
 
+        self.data = None
+        if os.path.exists(self.pyg_data_path):
+            try:
+                import torch
+                self.data = torch.load(self.pyg_data_path, map_location='cpu', weights_only=False)
+            except ImportError:
+                self.data = None
+        if self.data is None:
+            self.data = self._load_networkx_data()
+
         self.out_edges = defaultdict(list)
         self.in_edges = defaultdict(list)
-        for edge_type in self.data.edge_types:
+        for edge_type in self._iter_edge_types():
             src_t, rel, dst_t = edge_type
-            edge_index = self.data[edge_type].edge_index
-            for src, dst in edge_index.t().tolist():
+            edge_index = self._edge_index_for(edge_type)
+            for src, dst in edge_index:
                 src_key = (src_t, int(src))
                 dst_key = (dst_t, int(dst))
                 self.out_edges[src_key].append((rel, dst_key))
@@ -87,6 +95,30 @@ class ImpactEngine:
             for rel, dst_key in edges
             if rel == 'defines' and dst_key[0] == 'Function' and src_key[0] in {'File', 'Class'}
         }
+
+    def _load_networkx_data(self):
+        import pickle
+        if not os.path.exists(self.paths['GRAPH_PATH']):
+            raise FileNotFoundError(f"Data not found for project '{self.project}'. Run softgnn setup first.")
+        with open(self.paths['GRAPH_PATH'], 'rb') as f:
+            graph = pickle.load(f)
+        edge_map = defaultdict(list)
+        for u, v, d in graph.edges(data=True):
+            src = self.key_by_full_id.get(str(u))
+            dst = self.key_by_full_id.get(str(v))
+            if src is None or dst is None:
+                continue
+            rel = d.get('type', 'linked')
+            edge_map[(src[0], rel, dst[0])].append((src[1], dst[1]))
+        return edge_map
+
+    def _iter_edge_types(self):
+        return self.data.edge_types if hasattr(self.data, 'edge_types') else list(self.data.keys())
+
+    def _edge_index_for(self, edge_type):
+        if hasattr(self.data, 'edge_types'):
+            return self.data[edge_type].edge_index.t().tolist()
+        return self.data.get(edge_type, [])
 
     def display_node_label(self, key):
         full_id = self.full_id_by_key.get(key, str(key))
@@ -307,6 +339,7 @@ class ImpactEngine:
         return ImpactResult(target, deduped_internal_members, candidates, mode, gnn_type_filter, direct_count, warnings)
 
     def _compute_gnn_scores(self, target_key, gnn_type_filter, status_callback=None):
+        import torch
         import torch.nn.functional as F
         import torch_geometric.transforms as T
         from softgnn_advisor.core.ai.gnn_architecture import HGTLinkPrediction

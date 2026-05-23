@@ -1,7 +1,11 @@
 import os
 import hashlib
-import torch
 import numpy as np
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -10,7 +14,7 @@ except ImportError:
 
 class CodebaseFeatureEncoder:
     def __init__(self, model_name='all-MiniLM-L6-v2'):
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = 'cuda' if torch is not None and torch.cuda.is_available() else 'cpu'
         self.feature_dim = 384
         print(f"Loading Feature Encoder ({model_name}) on {self.device}...")
         self.model = None

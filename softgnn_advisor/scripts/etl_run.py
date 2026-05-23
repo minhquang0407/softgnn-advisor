@@ -1,10 +1,17 @@
-﻿import os
+import os
 import sys
 import pickle
 import networkx as nx
-import torch
 import pandas as pd
-from torch_geometric.data import HeteroData
+
+try:
+    import torch
+    from torch_geometric.data import HeteroData
+    HAS_GNN_DEPS = True
+except ImportError:
+    torch = None
+    HeteroData = None
+    HAS_GNN_DEPS = False
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -66,16 +73,23 @@ def run_etl_pipeline(target_repo_path, project_name):
     with open(str(GRAPH_PATH), 'wb') as f:
         pickle.dump(G, f, pickle.HIGHEST_PROTOCOL)
     
-    print("=== 8. Converting to PyTorch Geometric HeteroData ===")
-    hetero_data, node_mapping = convert_nx_to_pyg(G)
-    torch.save(hetero_data, str(PYG_DATA_PATH))
+    if HAS_GNN_DEPS:
+        print("=== 8. Converting to PyTorch Geometric HeteroData ===")
+        hetero_data, node_mapping = convert_nx_to_pyg(G)
+        torch.save(hetero_data, str(PYG_DATA_PATH))
+        graph_summary = summarize_heterodata(hetero_data)
+    else:
+        print("=== 8. Skipping PyTorch Geometric export (install softgnn-advisor[gnn] to enable GNN training/ranking) ===")
+        node_mapping = build_node_mapping(G)
+        graph_summary = summarize_networkx_graph(G)
 
     metadata = load_metadata(METADATA_PATH)
     metadata.update({
         'project': project_name,
         'source_path': os.path.abspath(target_repo_path),
         'etl_finished_at': utc_now_iso(),
-        **summarize_heterodata(hetero_data),
+        'gnn_artifacts_available': HAS_GNN_DEPS,
+        **graph_summary,
     })
     save_metadata(METADATA_PATH, metadata)
     print(f"Metadata saved to {METADATA_PATH}")
@@ -99,6 +113,39 @@ def run_etl_pipeline(target_repo_path, project_name):
     df.to_csv(str(NODES_DATA_PATH), index=False)
     
     print("ETL Pipeline Completed Successfully!")
+
+def build_node_mapping(G):
+    node_mapping = {}
+    for n, d in G.nodes(data=True):
+        ntype = d.get('type', 'Unknown')
+        if ntype not in node_mapping:
+            node_mapping[ntype] = {}
+        node_mapping[ntype][n] = len(node_mapping[ntype])
+    return node_mapping
+
+
+def summarize_networkx_graph(G):
+    node_counts = {}
+    edge_counts = {}
+    for _, d in G.nodes(data=True):
+        ntype = d.get('type', 'Unknown')
+        node_counts[ntype] = node_counts.get(ntype, 0) + 1
+    for u, v, d in G.edges(data=True):
+        src_t = G.nodes[u].get('type', 'Unknown')
+        dst_t = G.nodes[v].get('type', 'Unknown')
+        rel = d.get('type', 'linked')
+        edge_key = f"{src_t} | {rel} | {dst_t}"
+        edge_counts[edge_key] = edge_counts.get(edge_key, 0) + 1
+    return {
+        'node_count': G.number_of_nodes(),
+        'edge_count': G.number_of_edges(),
+        'node_types': sorted(node_counts.keys()),
+        'edge_types': sorted(edge_counts.keys()),
+        'node_counts': node_counts,
+        'edge_counts': edge_counts,
+        'schema_hash': None,
+    }
+
 
 def convert_nx_to_pyg(G):
     data = HeteroData()
