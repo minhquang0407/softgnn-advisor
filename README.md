@@ -371,7 +371,7 @@ python softgnn.py generate-tests --project social-link --repo-path "C:\path\to\r
 
 ## Project status
 
-Current release: **v0.1.7**
+Current release: **v0.1.8**
 
 This is a developer preview. Generated tests should be reviewed before commit. Production-code fixes are intentionally out of scope for v0.1.
 

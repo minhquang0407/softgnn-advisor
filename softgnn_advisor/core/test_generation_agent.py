@@ -877,7 +877,8 @@ def {test_name}():
         from softgnn_advisor.config.settings import get_project_paths
         run_id = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         paths = get_project_paths(self.project)
-        apply_dir = Path(paths['PROJECT_DIR']) / 'apply_runs' / run_id
+        project_dir = Path(paths['PLANS_DIR']).parent
+        apply_dir = project_dir / 'apply_runs' / run_id
         apply_dir.mkdir(parents=True, exist_ok=True)
         plan_by_target = {plan.target_id: plan for plan in result.plans}
         rows = []
