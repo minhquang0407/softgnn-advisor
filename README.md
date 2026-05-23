@@ -42,7 +42,7 @@ Then run:
 
 ```bash
 softgnn setup /path/to/your-repo --project my-app
-softgnn apply --project my-app
+softgnn generate --project my-app
 ```
 
 For local development from source:
@@ -224,42 +224,57 @@ auto      -> try LLM first, fallback to templates when unavailable
 
 ## Quickstart
 
-After setup, a single command runs the full workflow:
+After setup, use `generate` for the full beginner workflow:
 
 ```powershell
-python softgnn.py setup C:\repo\my-app
-python softgnn.py apply --project my-app
+softgnn setup C:\repo\my-app --project my-app
+softgnn generate --project my-app
 ```
 
-`apply` does everything automatically:
+`generate` is the one-shot command:
 
 ```text
-detect changes (git / filesystem snapshot / full-scan)
-run pr-scan
-rank missing coverage targets
-generate tests (LLM or template)
-patch test files
-run pytest
-repair if failing
-rollback if still failing
-run runtime map
-run post-scan confirmation
+plan -> save latest_plan.json -> apply saved plan
 ```
 
-Nothing is modified unless pytest passes.
+During `apply`, SoftGNN:
 
-Want to review proposed tests before patching? Use `plan` first:
-
-```powershell
-python softgnn.py setup C:\repo\my-app
-python softgnn.py plan --project my-app   # review output
-python softgnn.py apply --project my-app  # apply reviewed plan
+```text
+writes generated tests under tests/
+runs pytest with streaming output
+repairs failing generated tests
+keeps passing generated tests
+rolls back failing generated tests
+refreshes runtime coverage for kept tests
+saves apply feedback to ~/.softgnn/<project>/apply_runs/<run_id>/result.json
 ```
 
-Template-only generation (no LLM):
+By default, `generate` also replans failed/rolled-back targets once:
+
+```text
+plan -> apply -> replan failed targets with apply feedback -> apply retry plan
+```
+
+To disable the extra replanning pass and save LLM tokens:
 
 ```powershell
-python softgnn.py apply --project my-app --strategy template
+softgnn generate --project my-app --replan-iters 0
+```
+
+Want to review proposed tests before patching? Use `plan` then `apply`:
+
+```powershell
+softgnn setup C:\repo\my-app --project my-app
+softgnn plan --project my-app    # generate + save a reusable plan, no writes
+softgnn apply --project my-app   # load saved plan, write tests, verify, rollback/map
+```
+
+`apply` is intentionally pure: it does **not** generate fresh tests when no saved plan exists. If there is no saved plan, run `plan` first or use `generate`.
+
+Template-only generation, without an LLM:
+
+```powershell
+softgnn generate --project my-app --no-llm
 ```
 
 Advanced commands are still available (`prepare`, `pr-scan`, `generate-tests`, `test-map`).
@@ -268,20 +283,24 @@ Mental model:
 
 ```text
 setup/prepare need the repo path once
-everyday commands use --project
+plan decides what to write
+apply executes an existing plan and owns rollback
+generate runs plan + apply, with one default replan attempt
 ```
 
 Daily commands after setup:
 
 | Goal | Command |
 |---|---|
-| Generate + verify tests | `python softgnn.py apply --project my-app` |
-| Review before patching | `python softgnn.py plan --project my-app` |
-| Inspect change impact | `python softgnn.py scan --project my-app` |
-| Runtime test map | `python softgnn.py map --project my-app` |
-| Health check | `python softgnn.py doctor --project my-app` |
-| Impact of one symbol | `python softgnn.py impact --project my-app FUNC:foo` |
-| Developer triage | `python softgnn.py triage --project my-app "bug description"` |
+| One-shot plan + apply + verify | `softgnn generate --project my-app` |
+| One-shot without replan | `softgnn generate --project my-app --replan-iters 0` |
+| Review before patching | `softgnn plan --project my-app` |
+| Apply reviewed plan | `softgnn apply --project my-app` |
+| Inspect change impact | `softgnn scan --project my-app` |
+| Runtime test map | `softgnn map --project my-app` |
+| Health check | `softgnn doctor --project my-app` |
+| Impact of one symbol | `softgnn impact --project my-app FUNC:foo` |
+| Developer triage | `softgnn triage --project my-app "bug description"` |
 
 More details: [docs/quickstart.md](docs/quickstart.md)
 
@@ -290,12 +309,14 @@ The full guide covers:
 ```text
 simple CLI workflow
 plan cache and apply-from-plan
+one-shot generate workflow
 Git PR workflow
 no-Git filesystem snapshot workflow
 first-run full-scan workflow
 explicit target workflow
 runtime coverage mapping
-patch/verify/repair/rollback flow
+patch/verify/repair/partial-rollback flow
+apply feedback and failed-target replanning
 ```
 
 ---
@@ -350,7 +371,7 @@ python softgnn.py generate-tests --project social-link --repo-path "C:\path\to\r
 
 ## Project status
 
-Current release: **v0.1.0-alpha**
+Current release: **v0.1.7**
 
 This is a developer preview. Generated tests should be reviewed before commit. Production-code fixes are intentionally out of scope for v0.1.
 
