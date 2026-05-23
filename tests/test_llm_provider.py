@@ -1,6 +1,6 @@
-import pytest
+﻿import pytest
 
-from core.llm_provider import GeminiProvider, LLMConfig, TemplateFallbackProvider, build_llm_provider, load_llm_config
+from softgnn_advisor.core.llm_provider import GeminiProvider, LLMConfig, TemplateFallbackProvider, build_llm_provider, load_llm_config
 
 
 def test_load_llm_config_defaults_to_template(monkeypatch):
@@ -45,3 +45,4 @@ def test_build_gemini_provider():
 
     assert isinstance(provider, GeminiProvider)
     assert provider.available is True
+

@@ -1,13 +1,13 @@
-import os
+﻿import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 
 import pandas as pd
 import torch
 
-from config.settings import get_project_paths
-from core.file_filters import is_source_code_file
-from core.metadata_utils import load_metadata
+from softgnn_advisor.config.settings import get_project_paths
+from softgnn_advisor.core.file_filters import is_source_code_file
+from softgnn_advisor.core.metadata_utils import load_metadata
 
 
 @dataclass
@@ -309,8 +309,8 @@ class ImpactEngine:
     def _compute_gnn_scores(self, target_key, gnn_type_filter, status_callback=None):
         import torch.nn.functional as F
         import torch_geometric.transforms as T
-        from core.ai.gnn_architecture import HGTLinkPrediction
-        from core.ai.predicter import Predictor
+        from softgnn_advisor.core.ai.gnn_architecture import HGTLinkPrediction
+        from softgnn_advisor.core.ai.predicter import Predictor
 
         def run():
             data_for_gnn = T.ToUndirected()(self.data)
@@ -352,3 +352,4 @@ class ImpactEngine:
                 return False
             return str(row.get('kind', '')).lower() == 'project' or key in self.project_defined_functions
         return False
+

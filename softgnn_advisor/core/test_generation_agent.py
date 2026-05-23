@@ -1,4 +1,4 @@
-import ast
+﻿import ast
 import os
 import re
 import subprocess
@@ -6,10 +6,10 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core.pr_scanner import PRScanner
-from core.llm_provider import LLMRequest, build_llm_provider, load_llm_config
-from core.llm_test_schema import parse_generated_test, parse_repair_response
-from infrastructure.pipelines.runtime_coverage_mapper import RuntimeCoverageMapper
+from softgnn_advisor.core.pr_scanner import PRScanner
+from softgnn_advisor.core.llm_provider import LLMRequest, build_llm_provider, load_llm_config
+from softgnn_advisor.core.llm_test_schema import parse_generated_test, parse_repair_response
+from softgnn_advisor.infrastructure.pipelines.runtime_coverage_mapper import RuntimeCoverageMapper
 
 
 @dataclass
@@ -858,3 +858,4 @@ Constraints:
         if node.args.kwarg:
             args.append('**' + node.args.kwarg.arg)
         return f"{node.name}({', '.join(args)})"
+

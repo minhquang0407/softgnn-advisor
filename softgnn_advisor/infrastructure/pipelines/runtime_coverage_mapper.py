@@ -1,4 +1,4 @@
-import ast
+﻿import ast
 import json
 import os
 import pickle
@@ -11,9 +11,9 @@ from pathlib import Path
 import networkx as nx
 import torch
 
-from config.settings import get_project_paths
-from core.metadata_utils import load_metadata, save_metadata, utc_now_iso
-from scripts.etl_run import convert_nx_to_pyg
+from softgnn_advisor.config.settings import get_project_paths
+from softgnn_advisor.core.metadata_utils import load_metadata, save_metadata, utc_now_iso
+from softgnn_advisor.scripts.etl_run import convert_nx_to_pyg
 
 
 @dataclass
@@ -345,3 +345,4 @@ class RuntimeCoverageMapper:
         if proc.returncode != 0 and proc.stderr:
             warnings.append(proc.stderr.strip().splitlines()[-1])
         return proc
+

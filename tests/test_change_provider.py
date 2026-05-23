@@ -1,6 +1,6 @@
-import os
+﻿import os
 
-from core.change_provider import (
+from softgnn_advisor.core.change_provider import (
     FilesystemSnapshotChangeProvider,
     FullScanChangeProvider,
     build_filesystem_snapshot,
@@ -44,3 +44,4 @@ def test_filesystem_snapshot_detects_added_modified_deleted(tmp_path):
     assert by_path['src/new.py'].status == 'added'
     assert by_path['src/modified.py'].status == 'modified'
     assert by_path['src/old.py'].status == 'deleted'
+

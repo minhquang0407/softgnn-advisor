@@ -1,9 +1,9 @@
-import os
+﻿import os
 import torch
 import torch.nn.functional as F
 import torch.amp
-from infrastructure.repositories import PyGDataRepository
-from core.interfaces import ILinkPredictor
+from softgnn_advisor.infrastructure.repositories import PyGDataRepository
+from softgnn_advisor.core.interfaces import ILinkPredictor
 
 
 class Predictor(ILinkPredictor):

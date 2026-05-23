@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import pickle
 import networkx as nx
@@ -8,14 +8,14 @@ from torch_geometric.data import HeteroData
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from infrastructure.pipelines.ast_parser import CodebaseASTParser
-from infrastructure.pipelines.git_parser import CodebaseGitParser
-from infrastructure.pipelines.feature_encoder import CodebaseFeatureEncoder
-from infrastructure.pipelines.contract_extractor import ContractExtractor, load_contract_snapshot, save_contract_snapshot
-from infrastructure.pipelines.test_parser import TestGraphParser
-from config.settings import get_project_paths
-from core.metadata_utils import load_metadata, save_metadata, summarize_heterodata, utc_now_iso
-from core.developer_aliases import load_developer_aliases
+from softgnn_advisor.infrastructure.pipelines.ast_parser import CodebaseASTParser
+from softgnn_advisor.infrastructure.pipelines.git_parser import CodebaseGitParser
+from softgnn_advisor.infrastructure.pipelines.feature_encoder import CodebaseFeatureEncoder
+from softgnn_advisor.infrastructure.pipelines.contract_extractor import ContractExtractor, load_contract_snapshot, save_contract_snapshot
+from softgnn_advisor.infrastructure.pipelines.test_parser import TestGraphParser
+from softgnn_advisor.config.settings import get_project_paths
+from softgnn_advisor.core.metadata_utils import load_metadata, save_metadata, summarize_heterodata, utc_now_iso
+from softgnn_advisor.core.developer_aliases import load_developer_aliases
 
 def run_etl_pipeline(target_repo_path, project_name):
     paths = get_project_paths(project_name)

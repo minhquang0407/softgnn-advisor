@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import os
 import subprocess
@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config.settings import get_project_paths
+from softgnn_advisor.config.settings import get_project_paths
 
 
 @dataclass
@@ -176,7 +176,7 @@ def _git_head(repo_path):
 
 
 def bundle_to_generation_plans(bundle):
-    from core.test_generation_agent import GeneratedTestPlan
+    from softgnn_advisor.core.test_generation_agent import GeneratedTestPlan
     plans = []
     for item in bundle.get('plans', []):
         plan = GeneratedTestPlan(
@@ -189,3 +189,4 @@ def bundle_to_generation_plans(bundle):
         )
         plans.append(plan)
     return plans
+

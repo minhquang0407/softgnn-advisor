@@ -1,13 +1,13 @@
-import ast
+﻿import ast
 import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-from config.settings import get_project_paths
-from core.change_provider import ChangedFile, ChangedHunk, build_change_set
-from core.impact_engine import ImpactEngine, ImpactTarget
-from infrastructure.pipelines.contract_extractor import ContractExtractor, load_contract_snapshot
+from softgnn_advisor.config.settings import get_project_paths
+from softgnn_advisor.core.change_provider import ChangedFile, ChangedHunk, build_change_set
+from softgnn_advisor.core.impact_engine import ImpactEngine, ImpactTarget
+from softgnn_advisor.infrastructure.pipelines.contract_extractor import ContractExtractor, load_contract_snapshot
 
 
 @dataclass
@@ -465,3 +465,4 @@ class PRScanner:
         value = value.replace('(', '').replace(')', '').replace('.', '_').replace('/', '_').replace(' ', '_')
         value = re.sub(r'[^0-9a-zA-Z_]+', '_', value).strip('_').lower()
         return value or 'target'
+

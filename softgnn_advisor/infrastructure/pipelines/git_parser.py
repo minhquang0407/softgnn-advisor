@@ -1,9 +1,9 @@
-from git import Repo
+﻿from git import Repo
 from git.exc import InvalidGitRepositoryError
 import os
 import networkx as nx
-from core.file_filters import is_relevant_file, normalize_repo_path
-from core.developer_aliases import resolve_developer_identity
+from softgnn_advisor.core.file_filters import is_relevant_file, normalize_repo_path
+from softgnn_advisor.core.developer_aliases import resolve_developer_identity
 
 class CodebaseGitParser:
     def __init__(self, root_dir, developer_aliases=None):
@@ -89,3 +89,4 @@ if __name__ == '__main__':
     parser = CodebaseGitParser(".")
     G = parser.parse_all()
     print("Git Graph built successfully!")
+

@@ -1,13 +1,29 @@
 import os
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
 
-DATA_DIR = BASE_DIR / "data_output"
+def get_data_root() -> Path:
+    """Resolve the data root directory.
 
-CLEAN_DATA_DIR = DATA_DIR / "cleaned"
-for d in [CLEAN_DATA_DIR, DATA_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
+    Priority:
+    1. SOFTGNN_DATA_DIR environment variable
+    2. ~/.softgnn (cross-platform user home)
+
+    For backward compatibility, if a legacy data_output/ directory exists
+    next to the installed package, a migration hint is printed once.
+    """
+    env = os.environ.get('SOFTGNN_DATA_DIR')
+    if env:
+        root = Path(env)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    root = Path.home() / '.softgnn'
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+DATA_DIR = get_data_root()
+
 
 def get_project_paths(project_name: str) -> dict:
     project_dir = DATA_DIR / project_name

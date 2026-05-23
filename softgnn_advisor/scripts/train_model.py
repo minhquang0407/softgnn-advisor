@@ -1,13 +1,13 @@
-import torch
+﻿import torch
 import torch.nn.functional as F
 import torch_geometric.transforms as T
 import numpy as np
 from sklearn.metrics import roc_auc_score
 import os
 
-from core.ai.gnn_architecture import HGTLinkPrediction
-from config.settings import get_project_paths
-from core.metadata_utils import compute_graph_schema_hash, load_metadata, save_metadata, utc_now_iso
+from softgnn_advisor.core.ai.gnn_architecture import HGTLinkPrediction
+from softgnn_advisor.config.settings import get_project_paths
+from softgnn_advisor.core.metadata_utils import compute_graph_schema_hash, load_metadata, save_metadata, utc_now_iso
 
 def prepare_data(data_path):
     print("Loading PyG Data...")
@@ -183,3 +183,4 @@ def run_optimization(project_name):
 
 if __name__ == '__main__':
     pass
+

@@ -1,8 +1,8 @@
-import os
+﻿import os
 import gzip
 import pickle
 
-from core.interfaces import ITrainingDataRepository
+from softgnn_advisor.core.interfaces import ITrainingDataRepository
 import torch
 from torch_geometric.data.storage import BaseStorage, GlobalStorage
 from torch_geometric.data import Data

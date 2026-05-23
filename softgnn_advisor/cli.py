@@ -1,4 +1,4 @@
-import click
+﻿import click
 import os
 import sys
 from rich.console import Console
@@ -11,8 +11,6 @@ if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
 
-# Ensure we can import internal modules
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 console = Console()
 
@@ -31,7 +29,7 @@ def etl(project, path):
     console.rule(f"[bold blue]SoftGNN ETL Pipeline - Project: {project}")
     console.print(f"Scanning target: [yellow]{os.path.abspath(path)}[/yellow]")
 
-    from scripts.etl_run import run_etl_pipeline
+    from softgnn_advisor.scripts.etl_run import run_etl_pipeline
     try:
         run_etl_pipeline(path, project)
         console.print("[bold green][SUCCESS] ETL Pipeline completed successfully![/bold green]")
@@ -47,7 +45,7 @@ def train(project):
     """Huan luyen loi AI HGT (Heterogeneous Graph Transformer)"""
     console.rule(f"[bold magenta]Training Core AI (HGT) - Project: {project}")
 
-    from scripts.train_model import run_optimization
+    from softgnn_advisor.scripts.train_model import run_optimization
     try:
         run_optimization(project)
         console.print("\n[bold green][SUCCESS] Training completed![/bold green]")
@@ -65,9 +63,9 @@ def prepare(project, path, skip_train):
     console.rule(f"[bold cyan]SoftGNN Prepare Pipeline - Project: {project}")
     console.print(f"Step 1/2: ETL for [yellow]{os.path.abspath(path)}[/yellow]")
 
-    from scripts.etl_run import run_etl_pipeline
-    from scripts.train_model import run_optimization
-    from core.change_provider import build_filesystem_snapshot, save_filesystem_snapshot, snapshot_path_for_project
+    from softgnn_advisor.scripts.etl_run import run_etl_pipeline
+    from softgnn_advisor.scripts.train_model import run_optimization
+    from softgnn_advisor.core.change_provider import build_filesystem_snapshot, save_filesystem_snapshot, snapshot_path_for_project
 
     try:
         run_etl_pipeline(path, project)
@@ -115,7 +113,7 @@ def prepare(project, path, skip_train):
 @click.option('--change-source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True, help='Detect changes from git, filesystem snapshot, or full scan')
 def generate_tests(project, base, head, repo_path, mode, max_targets, target_id, source_file, verify, repair_iters, refresh_runtime, runtime_mode, confirm_pr_scan, keep_failing_tests, pytest_args, generation_strategy, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, change_source):
     """Generate impact-aware pytest plans or conservative test patches."""
-    from core.test_generation_agent import TestGenerationAgent
+    from softgnn_advisor.core.test_generation_agent import TestGenerationAgent
 
     console.rule(f"[bold cyan]SoftGNN Test Generation - Project: {project}")
     console.print(f"Range: [cyan]{base}...{head}[/cyan]")
@@ -172,7 +170,7 @@ def generate_tests(project, base, head, repo_path, mode, max_targets, target_id,
 @click.option('--max-tests', default=None, type=int, help='Optional safety limit for discovered tests')
 def test_map(project, repo_path, pytest_args, mode, persist, max_tests):
     """Map pytest runtime coverage to TestFunction -> executes_runtime -> Function edges."""
-    from infrastructure.pipelines.runtime_coverage_mapper import RuntimeCoverageMapper
+    from softgnn_advisor.infrastructure.pipelines.runtime_coverage_mapper import RuntimeCoverageMapper
 
     console.rule(f"[bold cyan]SoftGNN Runtime Test Mapping - Project: {project}")
     console.print(f"Mode: [cyan]{mode}[/cyan]")
@@ -231,7 +229,7 @@ def test_map(project, repo_path, pytest_args, mode, persist, max_tests):
 @click.option('--suggest-tests/--no-suggest-tests', default=True, show_default=True, help='Suggest tests for changed and impacted nodes')
 def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_impact, max_reviewers, suggest_tests):
     """Scan a local PR/diff and recommend impact, reviewers, and tests."""
-    from core.pr_scanner import PRScanner
+    from softgnn_advisor.core.pr_scanner import PRScanner
 
     console.print(Panel(
         f"Running PR Scan\n"
@@ -372,7 +370,7 @@ def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_
 @click.argument('function_name')
 def impact(project, mode, gnn_types, function_name):
     """Du bao ham/file co nguy co bi anh huong khi thay doi target."""
-    from core.impact_engine import ImpactEngine
+    from softgnn_advisor.core.impact_engine import ImpactEngine
 
     console.print(Panel(
         f"Running Change Impact Analysis for: [bold cyan]{function_name}[/bold cyan]\n"
@@ -464,13 +462,13 @@ def triage(project, bug_description):
     import re
     import torch
     import torch_geometric.transforms as T
-    from config.settings import get_project_paths
-    from core.ai.predicter import Predictor
-    from core.ai.gnn_architecture import HGTLinkPrediction
-    from core.file_filters import is_source_code_file, is_valid_developer_name
-    from core.metadata_utils import load_metadata
-    from core.developer_aliases import load_developer_aliases, resolve_developer_identity
-    from infrastructure.pipelines.feature_encoder import CodebaseFeatureEncoder
+    from softgnn_advisor.config.settings import get_project_paths
+    from softgnn_advisor.core.ai.predicter import Predictor
+    from softgnn_advisor.core.ai.gnn_architecture import HGTLinkPrediction
+    from softgnn_advisor.core.file_filters import is_source_code_file, is_valid_developer_name
+    from softgnn_advisor.core.metadata_utils import load_metadata
+    from softgnn_advisor.core.developer_aliases import load_developer_aliases, resolve_developer_identity
+    from softgnn_advisor.infrastructure.pipelines.feature_encoder import CodebaseFeatureEncoder
 
     console.print(Panel(
         f"[SEARCH] Bug Triage Analysis\n"
@@ -720,7 +718,7 @@ def inspect(project):
     import torch
     import torch_geometric.transforms as T
     import pandas as pd
-    from config.settings import get_project_paths
+    from softgnn_advisor.config.settings import get_project_paths
 
     console.rule(f"[bold cyan]Graph Inspection - Project: {project}")
 
@@ -843,8 +841,8 @@ def explain(project, developer):
     import pandas as pd
     import torch
     from collections import Counter, defaultdict
-    from config.settings import get_project_paths
-    from core.developer_aliases import load_developer_aliases, resolve_developer_identity
+    from softgnn_advisor.config.settings import get_project_paths
+    from softgnn_advisor.core.developer_aliases import load_developer_aliases, resolve_developer_identity
 
     console.rule(f"[bold cyan]Developer Explanation - Project: {project}")
     console.print(Panel(
@@ -963,8 +961,8 @@ def doctor(project):
     """Kiem tra moi truong, metadata va tinh hop le cua model/graph"""
     import torch
     import torch_geometric.transforms as T
-    from config.settings import get_project_paths
-    from core.metadata_utils import compute_graph_schema_hash, load_metadata
+    from softgnn_advisor.config.settings import get_project_paths
+    from softgnn_advisor.core.metadata_utils import compute_graph_schema_hash, load_metadata
 
     console.rule(f"[bold cyan]SoftGNN Doctor - Project: {project}")
     paths = get_project_paths(project)
@@ -1047,8 +1045,8 @@ def _default_project_name(repo_path):
 
 
 def _repo_path_for_project(project):
-    from config.settings import get_project_paths
-    from core.metadata_utils import load_metadata
+    from softgnn_advisor.config.settings import get_project_paths
+    from softgnn_advisor.core.metadata_utils import load_metadata
     metadata = load_metadata(get_project_paths(project)['METADATA_PATH'])
     repo_path = metadata.get('source_path')
     if not repo_path:
@@ -1074,9 +1072,9 @@ def simple_setup(repo_path, project, train):
     """Beginner setup: build graph and filesystem snapshot."""
     project = project or _default_project_name(repo_path)
     console.rule(f"[bold cyan]SoftGNN Setup - Project: {project}")
-    from scripts.etl_run import run_etl_pipeline
-    from scripts.train_model import run_optimization
-    from core.change_provider import build_filesystem_snapshot, save_filesystem_snapshot, snapshot_path_for_project
+    from softgnn_advisor.scripts.etl_run import run_etl_pipeline
+    from softgnn_advisor.scripts.train_model import run_optimization
+    from softgnn_advisor.core.change_provider import build_filesystem_snapshot, save_filesystem_snapshot, snapshot_path_for_project
 
     run_etl_pipeline(repo_path, project)
     snapshot = build_filesystem_snapshot(repo_path)
@@ -1101,7 +1099,7 @@ def simple_scan(project, repo_path, base, head, source, mode, max_impact):
     """Beginner scan: detect changes and suggest coverage targets without LLM calls."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]LLM: not used | Writes: none | Pytest: not run[/cyan]")
-    from core.pr_scanner import PRScanner
+    from softgnn_advisor.core.pr_scanner import PRScanner
     scanner = PRScanner(project, repo_path=repo_path)
     result = scanner.scan(base=base, head=head, mode=mode, max_impact=max_impact, change_source=source)
     for warning in result.warnings:
@@ -1134,8 +1132,8 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
     """Beginner plan: scan, generate proposed tests, and save a reusable plan bundle."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]LLM: strategy-dependent | Writes: plan cache only | Pytest: not run[/cyan]")
-    from core.test_generation_agent import TestGenerationAgent
-    from core.plan_cache import save_plan_bundle
+    from softgnn_advisor.core.test_generation_agent import TestGenerationAgent
+    from softgnn_advisor.core.plan_cache import save_plan_bundle
     agent = TestGenerationAgent(project, repo_path=repo_path)
     result = agent.generate(
         base=base,
@@ -1177,8 +1175,8 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
     """Beginner apply: reuse reviewed plan when valid, then patch, verify, map runtime, and confirm."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Writes: tests only | Pytest: yes | Runtime map: yes[/cyan]")
-    from core.test_generation_agent import TestGenerationAgent
-    from core.plan_cache import bundle_to_generation_plans, load_plan_bundle, validate_plan_bundle
+    from softgnn_advisor.core.test_generation_agent import TestGenerationAgent
+    from softgnn_advisor.core.plan_cache import bundle_to_generation_plans, load_plan_bundle, validate_plan_bundle
     agent = TestGenerationAgent(project, repo_path=repo_path)
     if not ignore_plan:
         try:
@@ -1243,7 +1241,7 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
 def simple_map(project, repo_path, pytest_args, mode, persist, max_tests):
     """Beginner map: run pytest runtime coverage mapping."""
     repo_path = repo_path or _repo_path_for_project(project)
-    from infrastructure.pipelines.runtime_coverage_mapper import RuntimeCoverageMapper
+    from softgnn_advisor.infrastructure.pipelines.runtime_coverage_mapper import RuntimeCoverageMapper
     mapper = RuntimeCoverageMapper(project, repo_path=repo_path)
     result = mapper.map_runtime_coverage(pytest_args=pytest_args, mode=mode, persist=persist, max_tests=max_tests)
     for warning in result.warnings:
@@ -1253,3 +1251,4 @@ def simple_map(project, repo_path, pytest_args, mode, persist, max_tests):
 
 if __name__ == '__main__':
     cli()
+

@@ -1,6 +1,6 @@
-import types
+﻿import types
 
-from core.plan_cache import save_plan_bundle, load_plan_bundle, validate_plan_bundle
+from softgnn_advisor.core.plan_cache import save_plan_bundle, load_plan_bundle, validate_plan_bundle
 
 
 class Result:
@@ -52,3 +52,4 @@ def test_save_load_and_validate_plan_bundle(tmp_path, monkeypatch):
 
     assert not validation.valid
     assert any('src/calc.py' in warning for warning in validation.warnings)
+

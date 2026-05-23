@@ -16,6 +16,48 @@
 
 ---
 
+## Install
+
+Recommended for CLI use:
+
+```bash
+pipx install softgnn-advisor
+```
+
+Or install into your current environment:
+
+```bash
+pip install softgnn-advisor
+```
+
+Optional extras:
+
+```bash
+pip install "softgnn-advisor[llm]"   # Gemini / OpenAI-compatible generation
+pip install "softgnn-advisor[gnn]"   # PyTorch Geometric ranking
+pip install "softgnn-advisor[all]"   # full stack
+```
+
+Then run:
+
+```bash
+softgnn setup /path/to/your-repo --project my-app
+softgnn apply --project my-app
+```
+
+For local development from source:
+
+```bash
+git clone https://github.com/minhquang0407/softgnn-advisor.git
+cd softgnn-advisor
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+pip install -e ".[all]"
+softgnn --help
+```
+
+---
+
 ## What is SoftGNN?
 
 SoftGNN Advisor is an experimental CLI that combines a **code graph**, **runtime test graph**, and **LLM test generation** to help you understand PR impact and generate missing pytest tests.

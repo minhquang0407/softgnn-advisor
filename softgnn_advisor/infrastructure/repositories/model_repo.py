@@ -1,4 +1,4 @@
-import torch
+﻿import torch
 import os
 import pickle
 import sys
@@ -6,7 +6,7 @@ from pathlib import Path
 FILE_PATH = Path(__file__).resolve()
 PROJECT_DIR = FILE_PATH.parent.parent.parent
 sys.path.append(str(PROJECT_DIR))
-from core.interfaces import IModelRepository
+from softgnn_advisor.core.interfaces import IModelRepository
 
 
 class ModelRepository(IModelRepository):

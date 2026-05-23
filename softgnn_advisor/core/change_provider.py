@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import json
 import os
 import subprocess
@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config.settings import get_project_paths
+from softgnn_advisor.config.settings import get_project_paths
 
 
 @dataclass
@@ -287,3 +287,4 @@ def _line_count(repo_path, rel_path):
             return sum(1 for _ in f)
     except OSError:
         return 0
+

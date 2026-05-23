@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "softgnn-advisor"
+version = "0.1.0"
+description = "Graph-guided, runtime-proven, LLM-assisted PR test generation for Python projects"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["testing", "graph", "llm", "code-intelligence", "pytest", "gnn"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "click>=8.0",
+    "rich>=13.0",
+    "networkx>=3.0",
+    "pandas>=2.0",
+    "numpy",
+    "gitpython>=3.1",
+    "thefuzz[speedup]",
+    "unidecode",
+    "tqdm",
+    "python-igraph",
+    "requests",
+    "pytest",
+    "pytest-cov",
+]
+
+[project.optional-dependencies]
+gnn = [
+    "torch>=2.0",
+    "torch-geometric",
+    "sentence-transformers>=2.0",
+    "scikit-learn",
+]
+llm = [
+    "google-generativeai>=0.8",
+    "openai>=1.0",
+]
+all = [
+    "softgnn-advisor[gnn]",
+    "softgnn-advisor[llm]",
+]
+
+[project.scripts]
+softgnn = "softgnn_advisor.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/minhquang0407/softgnn-advisor"
+Repository = "https://github.com/minhquang0407/softgnn-advisor"
+Issues = "https://github.com/minhquang0407/softgnn-advisor/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["softgnn_advisor*"]
+
+[tool.setuptools.package-data]
+"softgnn_advisor" = ["py.typed"]

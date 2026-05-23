@@ -1,0 +1,5 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+include ROADMAP.md
+recursive-include softgnn_advisor *.py *.md *.json *.yaml *.toml
