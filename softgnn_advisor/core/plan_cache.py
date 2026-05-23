@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 import json
 import os
 import subprocess
@@ -110,6 +110,7 @@ def _plan_to_dict(plan):
         'test_names': list(plan.test_names or []),
         'rationale': plan.rationale,
         'code': plan.code,
+        'source_file': getattr(plan, 'source_file', ''),
         'assumptions': list(plan.assumptions or []),
     }
 
@@ -186,6 +187,7 @@ def bundle_to_generation_plans(bundle):
             rationale=item.get('rationale', ''),
             code=item.get('code', ''),
             assumptions=item.get('assumptions', []),
+            source_file=item.get('source_file') or targets_by_id.get(item.get('target_id'), {}).get('source_file', ''),
         )
         plans.append(plan)
     return plans

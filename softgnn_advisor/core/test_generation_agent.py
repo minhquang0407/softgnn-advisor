@@ -1,4 +1,4 @@
-﻿import ast
+import ast
 import os
 import re
 import subprocess
@@ -30,6 +30,7 @@ class GeneratedTestPlan:
     rationale: str
     code: str
     assumptions: list = field(default_factory=list)
+    source_file: str = ''
 
 
 @dataclass
@@ -183,7 +184,7 @@ class TestGenerationAgent:
         test_file = target.suggested_file or self._suggest_test_file(target.source_file)
         code, assumptions = self._generate_semantic_pytest_code(target, context, test_name)
         rationale = f"Generated semantic test because {target.node_id} has missing coverage: {target.reason}."
-        return GeneratedTestPlan(target.node_id, test_file, [test_name], rationale, code, assumptions)
+        return GeneratedTestPlan(target.node_id, test_file, [test_name], rationale, code, assumptions, target.source_file)
 
     def _try_build_llm_plan(self, target, context, warnings, llm_required, llm_temperature, llm_max_tokens):
         if not getattr(self.llm_provider, 'available', False):
@@ -214,15 +215,17 @@ class TestGenerationAgent:
             generated.rationale,
             generated.code,
             generated.assumptions,
+            target.source_file,
         )
 
     def _llm_generation_system_prompt(self):
-        return """You are SoftGNN's test generation assistant. Generate concise, deterministic pytest tests only. Return exactly one JSON object and no markdown. Never modify production code. Tests must write only under tmp_path if file IO is needed. Mock heavy dependencies, training loops, GPU/CUDA, network, and external services."""
+        return """You are SoftGNN's test generation assistant. Generate concise, deterministic pytest tests only. Return exactly one JSON object and no markdown. Never modify production code. Tests must write only under tmp_path if file IO is needed. Use the provided source context exactly: do not invent constructor argument names, method names, imports, or return shapes. If a module has import-time side effects, avoid importing it until mocks are installed or mock dependency modules via sys.modules first. Mock heavy dependencies, training loops, GPU/CUDA, network, databases, Streamlit runtime, and external services."""
 
     def _llm_generation_user_prompt(self, target, context):
         existing_tests = self._read_text(os.path.join(self.repo_path, (target.suggested_file or self._suggest_test_file(target.source_file)).replace('/', os.sep)))
         qualname = target.node_id.replace('FUNC:', '')
         snippet = self._target_source_snippet(qualname, context)
+        focused_context = self._focused_source_context(qualname, context)
         return f"""
 Return JSON with this schema:
 {{
@@ -246,10 +249,17 @@ Target source snippet:
 {snippet[:6000]}
 ```
 
+Focused source context, including containing class, constructor, nearby signatures, and import-time side effects:
+```python
+{focused_context[:10000]}
+```
+
 Relevant imports:
 ```python
 {chr(10).join(context.get('imports', []))[:2000]}
 ```
+
+Detected call/dependency names inside target: {', '.join(context.get('target_calls', [])) or '-'}
 
 Existing tests in suggested file:
 ```python
@@ -262,8 +272,10 @@ Constraints:
 - code must define at least one pytest function listed in test_names.
 - Prefer behavior assertions over callable/hasattr smoke tests.
 - Use monkeypatch/tmp_path for side effects.
-- Mock heavy training, CUDA, network, and filesystem writes outside tmp_path.
+- Mock heavy training, CUDA, network, databases, Streamlit runtime, and filesystem writes outside tmp_path.
 - Do not use subprocess, requests, urllib, socket, os.system, or shutil.rmtree.
+- Use real constructor signatures and real method names from focused context.
+- If testing a module with import-time side effects, install mocks before importing the module under test.
 """.strip()
 
     def _target_source_snippet(self, qualname, context):
@@ -287,6 +299,8 @@ Constraints:
             'classes': {},
             'functions': {},
             'module_path': self._module_path(target.source_file),
+            'module_side_effects': [],
+            'target_calls': [],
         }
         try:
             tree = ast.parse(source)
@@ -311,7 +325,70 @@ Constraints:
                     'signature': self._signature(node),
                     'source': self._slice_source(lines, node),
                 }
+        context['module_side_effects'] = self._detect_module_side_effects(tree, lines)
+        qualname = target.node_id.replace('FUNC:', '')
+        context['target_calls'] = self._target_call_names(qualname, context)
         return context
+
+    def _focused_source_context(self, qualname, context):
+        sections = []
+        if context.get('imports'):
+            sections.append('# Module imports\n' + '\n'.join(context.get('imports', [])))
+        if context.get('module_side_effects'):
+            sections.append('# Potential import-time side effects\n' + '\n'.join(context.get('module_side_effects', [])))
+        parts = qualname.split('.')
+        if len(parts) >= 2:
+            class_name, method_name = parts[-2], parts[-1]
+            cls = context.get('classes', {}).get(class_name)
+            if cls:
+                methods = cls.get('methods', {})
+                if '__init__' in methods:
+                    sections.append(f"# Constructor signature for {class_name}\n{methods['__init__'].get('source', '')}")
+                if method_name in methods and method_name != '__init__':
+                    sections.append(f"# Target method source for {class_name}.{method_name}\n{methods[method_name].get('source', '')}")
+                other_sigs = [f"def {name}{'' if meta.get('signature', '').startswith('(') else ' '}{meta.get('signature', '')}" for name, meta in methods.items() if name not in {'__init__', method_name}]
+                if other_sigs:
+                    sections.append('# Other method signatures in containing class\n' + '\n'.join(other_sigs[:40]))
+                sections.append(f"# Containing class source for {class_name}\n{cls.get('source', '')}")
+        else:
+            fn = context.get('functions', {}).get(parts[-1])
+            if fn:
+                sections.append(f"# Target function source for {parts[-1]}\n{fn.get('source', '')}")
+        if context.get('functions'):
+            signatures = [meta.get('signature', '') for meta in context.get('functions', {}).values()]
+            sections.append('# Module-level function signatures\n' + '\n'.join(signatures[:40]))
+        return '\n\n'.join(s for s in sections if s)
+
+    def _detect_module_side_effects(self, tree, lines):
+        effects = []
+        safe_nodes = (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        for node in getattr(tree, 'body', []):
+            if isinstance(node, safe_nodes):
+                continue
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.Expr)):
+                text = self._slice_source(lines, node).strip()
+                if '(' in text or any(name in text for name in ('streamlit', 'st.', 'Qdrant', 'connect', 'init_system')):
+                    effects.append(text[:300])
+            else:
+                effects.append(self._slice_source(lines, node).strip()[:300])
+        return effects
+
+    def _target_call_names(self, qualname, context):
+        source = self._target_source_snippet(qualname, context)
+        if not source:
+            return []
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return []
+        names = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    names.append(node.func.id)
+                elif isinstance(node.func, ast.Attribute):
+                    names.append(node.func.attr)
+        return sorted(set(names))
 
     def _generate_semantic_pytest_code(self, target, context, test_name):
         qualname = target.node_id.replace('FUNC:', '')
@@ -683,9 +760,10 @@ def {test_name}():
         if not plans:
             return 'no-op'
         plan = plans[0]
+        context = self._collect_source_context(TestGenerationTarget(plan.target_id, getattr(plan, 'source_file', '') or '', 'repair context', 0.0))
         request = LLMRequest(
             system_prompt=self._llm_repair_system_prompt(),
-            user_prompt=self._llm_repair_user_prompt(plan, pytest_output),
+            user_prompt=self._llm_repair_user_prompt(plan, pytest_output, context),
             temperature=llm_temperature,
             max_tokens=llm_max_tokens,
         )
@@ -704,9 +782,10 @@ def {test_name}():
             return 'no-op'
 
     def _llm_repair_system_prompt(self):
-        return """You repair generated pytest code. Return exactly one JSON object and no markdown. Replace only the generated test block. Keep tests deterministic, CPU-safe, and under pytest. Do not use subprocess, network, os.system, requests, urllib, socket, or destructive filesystem operations."""
+        return """You repair generated pytest code. Return exactly one JSON object and no markdown. Replace only the generated test block. Use the provided production source context exactly; do not invent constructor argument names or mock paths. If pytest failed due to import-time side effects, move imports inside tests and install mocks before importing the module. Keep tests deterministic, CPU-safe, and under pytest. Do not use subprocess, network, os.system, requests, urllib, socket, or destructive filesystem operations."""
 
-    def _llm_repair_user_prompt(self, plan, pytest_output):
+    def _llm_repair_user_prompt(self, plan, pytest_output, context=None):
+        context = context or {}
         return f"""
 Return JSON:
 {{
@@ -725,6 +804,16 @@ Current generated code:
 Pytest output:
 ```text
 {pytest_output[-6000:]}
+```
+
+Production source context for repair:
+```python
+{self._focused_source_context(plan.target_id.replace('FUNC:', ''), context)[:10000]}
+```
+
+Detected import-time side effects:
+```text
+{chr(10).join(context.get('module_side_effects', [])) or '-'}
 ```
 
 Constraints:
