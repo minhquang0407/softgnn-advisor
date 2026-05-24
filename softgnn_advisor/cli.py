@@ -4,6 +4,7 @@ import sys
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.markdown import Markdown
 import time
 
 # Force UTF-8 encoding for Windows to prevent CP1252 crashes on Vietnamese/emoji text
@@ -1090,7 +1091,7 @@ def _repo_path_for_project(project):
 
 def _render_generation(agent, result):
     markdown = agent.render_markdown(result)
-    console.print(markdown)
+    console.print(Markdown(markdown, code_theme='monokai'))
     if result.files_written:
         console.print(f"[bold green]Wrote {len(result.files_written)} test file(s).[/bold green]")
     return markdown
