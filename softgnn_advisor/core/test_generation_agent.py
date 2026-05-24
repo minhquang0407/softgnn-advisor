@@ -838,9 +838,18 @@ def {test_name}():
         kept_files = []
         any_failed = False
         written_files = set(self._plan_rel_path(plan) for plan in plans)
+        rolled_back_files = set()
         for plan in plans:
             rel_path = self._plan_rel_path(plan)
             if rel_path not in written_files:
+                continue
+            if rel_path in rolled_back_files:
+                output = f'Skipped verification for {rel_path}; the file was already rolled back after an earlier failing target in the same apply run.'
+                all_outputs.append(output)
+                any_failed = True
+                status = 'rolled_back'
+                self._print_status('ROLLBACK', f'Skipped already rolled back generated test: {rel_path}', 'red')
+                verification_results.append(PlanVerificationResult(plan.target_id, rel_path, str(rel_path), 1, output, status, []))
                 continue
             pytest_target = rel_path if not pytest_args else pytest_args
             self._print_status('RUN', f'Running pytest for {rel_path}', 'cyan')
@@ -875,6 +884,7 @@ def {test_name}():
                 elif partial_rollback:
                     status = 'rolled_back'
                     self._rollback_plan_snapshot(plan, snapshots)
+                    rolled_back_files.add(rel_path)
                     self._print_status('ROLLBACK', f'Rolled back failing generated test: {rel_path}', 'red')
                 else:
                     status = 'failed_pending_batch_rollback'

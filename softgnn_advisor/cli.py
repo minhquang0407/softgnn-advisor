@@ -1216,7 +1216,7 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--llm-temperature', default=0.1, show_default=True, help='LLM temperature')
 @click.option('--llm-max-tokens', default=4096, show_default=True, help='LLM max output tokens')
 @click.option('--source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True)
-@click.option('--repair', default=2, show_default=True)
+@click.option('--repair', default=0, show_default=True, help='Local repair attempts before rollback; default 0 keeps flow as apply -> rollback -> replan')
 @click.option('--replan-iters', default=1, show_default=True, help='Re-plan rolled-back/failed targets after apply feedback')
 @click.option('--pytest', 'pytest_args', default=None, help='Override pytest args')
 @click.option('--keep-failing-tests/--rollback-failing-tests', default=False, show_default=True)
