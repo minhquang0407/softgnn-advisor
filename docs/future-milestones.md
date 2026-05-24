@@ -309,6 +309,159 @@ This is the clearest path to making SoftGNN a research-grade AI testing system r
 
 ---
 
+# M6.5 — Graph-Native Test Synthesis
+
+## Goal
+
+Shift the role of LLM from **test designer** to **test implementer** by using the code graph and runtime data as the primary reasoning substrate for test design.
+
+Most tools — including multi-agent ones — fundamentally rely on:
+
+```text
+prompt -> LLM guesses test -> pytest
+```
+
+SoftGNN's unique position is that it owns the code graph, runtime execution graph, and apply-run history. M6.5 puts these at the center of test generation, not as context for LLM prompts, but as the actual reasoning engine.
+
+## The Paradigm Shift
+
+Instead of:
+
+```text
+"Write a test for function X"  ->  LLM guesses
+```
+
+SoftGNN does:
+
+```text
+Graph mines spec of X -> synthesizes test skeleton -> LLM only fills implementation
+```
+
+LLM moves from **designer** to **craftsman filling in a blueprint**.
+
+## Specification Mining
+
+Automatically derive behavioral specifications of a function from:
+
+```text
+Call graph:
+  - who calls X, what does X call
+  - preconditions implied by callers
+  - postconditions implied by callees
+
+Runtime traces:
+  - actual argument shapes seen at runtime
+  - actual return values observed
+  - which code paths were exercised
+
+Contract history:
+  - signature changes across PRs
+  - type annotation changes
+  - docstring contracts
+
+Apply-run history:
+  - which kinds of tests for similar functions succeeded
+  - which assertion patterns work for this function type
+  - which edge cases historically caused failures
+```
+
+Output: a **behavioral spec** for the function:
+
+```text
+is_edge_index_sorted:
+  - receives: Tensor[2, N], sorted_columns=bool
+  - returns: bool
+  - invariant: returns True iff edge_index[0] is non-decreasing
+  - known edge cases: empty tensor, single edge, unsorted input
+  - failure history: mock Tensor incorrectly causes false positive
+```
+
+## Test Skeleton Synthesis
+
+From the spec, the graph synthesizes a structured test skeleton before LLM is invoked:
+
+```text
+target: is_edge_index_sorted
+strategy: happy path + edge cases from spec
+skeleton:
+  test_is_edge_index_sorted_sorted_returns_true:
+    arrange: real Tensor [2, N], sorted
+    act: call is_edge_index_sorted(tensor)
+    assert: result is True
+    runtime_proof: required
+
+  test_is_edge_index_sorted_unsorted_returns_false:
+    arrange: real Tensor [2, N], NOT sorted
+    act: call is_edge_index_sorted(tensor)
+    assert: result is False
+
+  test_is_edge_index_sorted_empty_edge_case:
+    arrange: empty Tensor [2, 0]
+    act: call is_edge_index_sorted(tensor)
+    assert: result is True or raises ValueError
+    note: from apply-run history
+```
+
+LLM only writes the implementation of each skeleton slot, not the design.
+
+## Hybrid with Multi-Agent (M7)
+
+This is where M6.5 and M7 combine into the strongest possible architecture.
+
+Instead of prompt-driven agents:
+
+```text
+"Write a test for X" -> WriterAgent guesses -> ReviewerAgent critiques -> RepairAgent fixes
+```
+
+M6.5 + M7 hybrid runs spec-driven agents:
+
+```text
+Graph mines behavioral spec of X
+  ↓
+SkeletonAgent: synthesizes test structure from spec (no LLM, pure graph reasoning)
+  ↓
+WriterAgent: implements each skeleton slot (LLM, but guided by spec + skeleton)
+  ↓
+ReviewerAgent: checks implementation against the spec, not just style (LLM, spec-aware)
+  ↓
+CoverageAgent: verifies runtime proof matches expected paths from spec (deterministic)
+  ↓
+QualityGate: accepts only tests that prove spec properties hold (deterministic)
+```
+
+Key difference: agents work from a **spec and skeleton**, not from a raw prompt. Every agent has a contract to fulfill, not a vague instruction to interpret.
+
+## Why This Stands Above Multi-Agent Alone
+
+| | Multi-Agent (M7 alone) | Graph-Native + Multi-Agent (M6.5 + M7) |
+|---|---|---|
+| Test design source | LLM interpretation of prompt | Graph-derived behavioral spec |
+| Agents' input | Raw function text | Structured spec + skeleton |
+| Reviewer checks | Style, correctness (text-based) | Spec compliance (graph-grounded) |
+| Improves over time | No | Yes (spec mines from apply-run history) |
+| Can be copied | Yes (same prompts) | Hard (requires graph + runtime data) |
+| Research story | Multi-agent orchestration | Program synthesis + causal test design |
+
+## Planned Commands
+
+```powershell
+softgnn mine-spec --project social-link --target FUNC:is_edge_index_sorted
+softgnn synthesize --project social-link --base main --head HEAD
+```
+
+`synthesize` runs the full M6.5 + M7 pipeline:
+
+```text
+spec mining -> skeleton synthesis -> spec-driven multi-agent -> runtime proof
+```
+
+## Why M6.5 Before M7
+
+M6.5 changes what multi-agent works with. Running M7 before M6.5 means agents work from prompts. Running M7 after M6.5 means agents work from specs. The second is meaningfully stronger. M6.5 is the foundation that M7 should build on.
+
+---
+
 # M7 — Multi-Agent Quality Swarm
 
 ## Goal
@@ -524,11 +677,12 @@ This is a separate ML/model-ops layer and should come after the product workflow
 2. M4 Runtime-Proven Test Generation
 3. M5 Graph Impact Report / Dashboard
 4. M6 Learned GNN Ranking, CI Subset Selection, and Apply-Run Dataset
-5. M7 Multi-Agent Quality Swarm
-6. M8 Large-Scale Repo Automation
-7. M9 Controlled Production-Code Fixes
-8. M10 Enterprise Provider/Auth Hardening
-9. M11 Local Model Management / Fine-Tuning
+5. M6.5 Graph-Native Test Synthesis
+6. M7 Multi-Agent Quality Swarm (spec-driven, builds on M6.5)
+7. M8 Large-Scale Repo Automation
+8. M9 Controlled Production-Code Fixes
+9. M10 Enterprise Provider/Auth Hardening
+10. M11 Local Model Management / Fine-Tuning
 ```
 
 ---
