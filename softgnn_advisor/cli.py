@@ -1139,8 +1139,10 @@ def simple_scan(project, repo_path, base, head, source, mode, max_impact):
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]LLM: not used | Writes: none | Pytest: not run[/cyan]")
     from softgnn_advisor.core.pr_scanner import PRScanner
+    from softgnn_advisor.core.scan_cache import save_scan_bundle
     scanner = PRScanner(project, repo_path=repo_path)
     result = scanner.scan(base=base, head=head, mode=mode, max_impact=max_impact, change_source=source)
+    scan_path, latest_path, bundle = save_scan_bundle(project, result, repo_path, base=base, head=head, change_source=source, mode=mode)
     for warning in result.warnings:
         console.print(f"[yellow]{warning}[/yellow]")
     summary = Table(title="Scan Summary")
@@ -1153,6 +1155,9 @@ def simple_scan(project, repo_path, base, head, source, mode, max_impact):
     summary.add_row("Missing coverage", str(len(result.missing_coverage)))
     summary.add_row("Suggested tests", str(len(result.suggested_tests)))
     console.print(summary)
+    console.print(f"[bold green]Scan saved:[/bold green] {scan_path}")
+    console.print(f"[bold green]Latest scan:[/bold green] {latest_path}")
+    console.print(f"Next: [cyan]softgnn plan --project {project}[/cyan]")
 
 
 @cli.command('plan')
@@ -1168,17 +1173,51 @@ def simple_scan(project, repo_path, base, head, source, mode, max_impact):
 @click.option('--source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True)
 @click.option('--llm-required/--llm-fallback', default=True, show_default=True)
 @click.option('--save-plan/--no-save-plan', default=True, show_default=True)
-def simple_plan(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, source, llm_required, save_plan):
+@click.option('--scan', 'scan_ref', default='latest', show_default=True, help='Saved scan id/path to plan from; defaults to latest')
+@click.option('--refresh-scan', is_flag=True, help='Run a fresh scan before planning')
+@click.option('--force-stale-scan', is_flag=True, help='Plan from a stale saved scan')
+def simple_plan(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, source, llm_required, save_plan, scan_ref, refresh_scan, force_stale_scan):
     """Beginner plan: scan, generate proposed tests with LLM by default, and save a reusable plan bundle."""
     repo_path = repo_path or _repo_path_for_project(project)
     if no_llm:
         strategy = 'template'
         llm_required = False
-    console.print("[cyan]LLM: enabled by default | Writes: plan cache only | Pytest: not run[/cyan]")
+    console.print("[cyan]Workflow: scan snapshot -> plan | LLM: enabled by default | Writes: plan cache only | Pytest: not run[/cyan]")
     from softgnn_advisor.core.test_generation_agent import TestGenerationAgent
     from softgnn_advisor.core.plan_cache import save_plan_bundle
+    from softgnn_advisor.core.pr_scanner import PRScanner
+    from softgnn_advisor.core.scan_cache import load_scan_bundle, save_scan_bundle, scan_bundle_to_result, validate_scan_bundle
+    if refresh_scan:
+        console.print("[cyan]Stage SCAN: refreshing scan because --refresh-scan was set.[/cyan]")
+        scanner = PRScanner(project, repo_path=repo_path)
+        scan_result = scanner.scan(base=base, head=head, mode='hybrid', max_impact=30, change_source=source)
+        scan_path, _, scan_bundle = save_scan_bundle(project, scan_result, repo_path, base=base, head=head, change_source=source, mode='hybrid')
+    else:
+        try:
+            scan_bundle, scan_path = load_scan_bundle(project, scan_ref)
+            validation = validate_scan_bundle(scan_bundle, repo_path)
+            if not validation['valid'] and not force_stale_scan:
+                for warning in validation['warnings']:
+                    console.print(f"[yellow]{warning}[/yellow]")
+                console.print("[yellow]Saved scan is stale; auto-scanning fresh before planning.[/yellow]")
+                scanner = PRScanner(project, repo_path=repo_path)
+                scan_result = scanner.scan(base=base, head=head, mode='hybrid', max_impact=30, change_source=source)
+                scan_path, _, scan_bundle = save_scan_bundle(project, scan_result, repo_path, base=base, head=head, change_source=source, mode='hybrid')
+            else:
+                if not validation['valid']:
+                    for warning in validation['warnings']:
+                        console.print(f"[yellow]{warning}[/yellow]")
+                    console.print("[yellow]Using stale scan because --force-stale-scan was set.[/yellow]")
+                scan_result = scan_bundle_to_result(scan_bundle)
+                console.print(f"[bold green]Loaded saved scan:[/bold green] {scan_path}")
+        except FileNotFoundError:
+            console.print("[cyan]Stage SCAN: no saved scan found; auto-scanning first.[/cyan]")
+            scanner = PRScanner(project, repo_path=repo_path)
+            scan_result = scanner.scan(base=base, head=head, mode='hybrid', max_impact=30, change_source=source)
+            scan_path, _, scan_bundle = save_scan_bundle(project, scan_result, repo_path, base=base, head=head, change_source=source, mode='hybrid')
     agent = TestGenerationAgent(project, repo_path=repo_path)
-    result = agent.generate(
+    result = agent.plan_from_scan(
+        scan_result,
         base=base,
         head=head,
         mode='plan',
@@ -1192,7 +1231,7 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
     )
     _render_generation(agent, result)
     if save_plan and result.plans:
-        plan_path, latest_path, _ = save_plan_bundle(project, result, repo_path, base=base, head=head, change_source=source, llm_config=agent.llm_config)
+        plan_path, latest_path, _ = save_plan_bundle(project, result, repo_path, base=base, head=head, change_source=source, llm_config=agent.llm_config, scan_id=scan_bundle.get('scan_id'), scan_path=scan_path, scan_fingerprint=scan_bundle.get('repo_fingerprint'))
         console.print(f"[bold green]Plan saved:[/bold green] {plan_path}")
         console.print(f"[bold green]Latest plan:[/bold green] {latest_path}")
         console.print(f"Next: [cyan]python softgnn.py apply --project {project}[/cyan]")
@@ -1223,9 +1262,11 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--partial-rollback/--batch-rollback', default=True, show_default=True, help='Keep passing generated tests and roll back only failing generated tests')
 @click.option('--pytest-stream/--no-pytest-stream', default=True, show_default=True, help='Stream pytest output while verification runs')
 def simple_generate(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream):
-    """Beginner generate: run plan, save it, then apply that saved plan."""
+    """Beginner generate: run scan, plan, save it, then apply that saved plan."""
     repo_path = repo_path or _repo_path_for_project(project)
-    console.print("[cyan]Workflow: plan -> save -> apply | Pytest: yes | Runtime map: yes[/cyan]")
+    console.print("[cyan]Workflow: scan -> plan -> apply | Replan: plan -> apply using same scan | Pytest: yes | Runtime map: yes[/cyan]")
+    from softgnn_advisor.core.pr_scanner import PRScanner
+    from softgnn_advisor.core.scan_cache import save_scan_bundle
     from softgnn_advisor.core.test_generation_agent import TestGenerationAgent
     from softgnn_advisor.core.plan_cache import bundle_to_generation_plans, save_plan_bundle
     if no_llm:
@@ -1242,7 +1283,17 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
     )
-    plan_result = agent.generate(
+
+    agent.print_stage('SCAN', 'Fresh scan for generate workflow')
+    scanner = PRScanner(project, repo_path=repo_path)
+    scan_result = scanner.scan(base=base, head=head, mode='hybrid', max_impact=30, change_source=source)
+    scan_path, latest_scan_path, scan_bundle = save_scan_bundle(project, scan_result, repo_path, base=base, head=head, change_source=source, mode='hybrid')
+    console.print(f"[bold green]Scan saved:[/bold green] {scan_path}")
+    console.print(f"[bold green]Latest scan:[/bold green] {latest_scan_path}")
+
+    agent.print_stage('PLAN', 'Generating plan from saved scan')
+    plan_result = agent.plan_from_scan(
+        scan_result,
         base=base,
         head=head,
         mode='plan',
@@ -1262,19 +1313,20 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
     if not plan_result.plans:
         console.print("[yellow]No plans were generated; apply skipped.[/yellow]")
         return
-    plan_path, latest_path, bundle = save_plan_bundle(project, plan_result, repo_path, base=base, head=head, change_source=source, llm_config=agent.llm_config)
+    plan_path, latest_path, bundle = save_plan_bundle(project, plan_result, repo_path, base=base, head=head, change_source=source, llm_config=agent.llm_config, scan_id=scan_bundle.get('scan_id'), scan_path=scan_path, scan_fingerprint=scan_bundle.get('repo_fingerprint'))
     console.print(f"[bold green]Plan saved:[/bold green] {plan_path}")
     console.print(f"[bold green]Latest plan:[/bold green] {latest_path}")
-    plans = bundle_to_generation_plans(bundle)
+
+    agent.print_stage('APPLY', 'Applying saved plan and verifying generated blocks')
     result = agent.apply_saved_plans(
-        plans,
+        bundle_to_generation_plans(bundle),
         base=base,
         head=head,
         verify=True,
         repair_iters=repair,
         refresh_runtime=True,
         runtime_mode='per-test',
-        confirm_pr_scan=True,
+        confirm_pr_scan=False,
         keep_failing_tests=keep_failing_tests,
         pytest_args=pytest_args,
         generation_strategy=strategy,
@@ -1291,10 +1343,11 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
         if not feedback:
             console.print("[green]No failed targets remain; replan loop complete.[/green]")
             break
-        console.print(f"[cyan]Replanning {len(feedback)} failed target(s), iteration {iteration}/{replan_iters}.[/cyan]")
+        agent.print_stage('REPLAN', f'Planning {len(feedback)} failed target(s), iteration {iteration}/{replan_iters}, using same scan')
         retry_results = []
         for target_id, item in feedback.items():
-            retry_result = agent.generate(
+            retry_result = agent.plan_from_scan(
+                scan_result,
                 base=base,
                 head=head,
                 mode='plan',
@@ -1318,9 +1371,10 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
             break
         retry_result_for_save = retry_results[0]
         retry_result_for_save.plans = retry_plans
-        retry_plan_path, retry_latest_path, retry_bundle = save_plan_bundle(project, retry_result_for_save, repo_path, base=base, head=head, change_source=source, llm_config=agent.llm_config)
+        retry_plan_path, retry_latest_path, retry_bundle = save_plan_bundle(project, retry_result_for_save, repo_path, base=base, head=head, change_source=source, llm_config=agent.llm_config, scan_id=scan_bundle.get('scan_id'), scan_path=scan_path, scan_fingerprint=scan_bundle.get('repo_fingerprint'))
         console.print(f"[bold green]Retry plan saved:[/bold green] {retry_plan_path}")
         console.print(f"[bold green]Latest plan:[/bold green] {retry_latest_path}")
+        agent.print_stage('APPLY', f'Applying retry plan {iteration}/{replan_iters}')
         result = agent.apply_saved_plans(
             bundle_to_generation_plans(retry_bundle),
             base=base,
@@ -1329,7 +1383,7 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
             repair_iters=repair,
             refresh_runtime=True,
             runtime_mode='per-test',
-            confirm_pr_scan=True,
+            confirm_pr_scan=False,
             keep_failing_tests=keep_failing_tests,
             pytest_args=pytest_args,
             generation_strategy=strategy,
@@ -1426,7 +1480,7 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
         repair_iters=repair,
         refresh_runtime=True,
         runtime_mode='per-test',
-        confirm_pr_scan=True,
+        confirm_pr_scan=False,
         keep_failing_tests=keep_failing_tests,
         pytest_args=pytest_args,
         generation_strategy=strategy,

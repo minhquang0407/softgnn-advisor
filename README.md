@@ -45,6 +45,34 @@ softgnn setup /path/to/your-repo --project my-app
 softgnn generate --project my-app
 ```
 
+Or run each stage explicitly:
+
+```bash
+softgnn scan --project my-app
+softgnn plan --project my-app
+softgnn apply --project my-app
+```
+
+Stage meaning:
+
+```text
+scan  = inspect repo changes and save a reusable scan snapshot
+plan  = create a test plan from the saved scan, auto-scanning if none exists
+apply = write generated test blocks, run pytest, repair, rollback, and refresh runtime map
+```
+
+`softgnn generate` is the convenience workflow:
+
+```text
+scan -> plan -> apply
+```
+
+If apply fails and replan is enabled, retry planning reuses the same scan:
+
+```text
+plan -> apply
+```
+
 For local development from source:
 
 ```bash

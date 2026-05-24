@@ -19,7 +19,7 @@ def make_plan_id():
     return datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
 
 
-def save_plan_bundle(project, result, repo_path, base='main', head='HEAD', change_source='auto', llm_config=None, plan_id=None):
+def save_plan_bundle(project, result, repo_path, base='main', head='HEAD', change_source='auto', llm_config=None, plan_id=None, scan_id=None, scan_path=None, scan_fingerprint=None):
     paths = get_project_paths(project)
     plans_dir = Path(paths['PLANS_DIR'])
     latest_path = Path(paths['LATEST_PLAN_PATH'])
@@ -34,6 +34,9 @@ def save_plan_bundle(project, result, repo_path, base='main', head='HEAD', chang
         'head': head,
         'change_source': change_source,
         'repo_fingerprint': build_repo_fingerprint(repo_path, result.plans),
+        'scan_id': scan_id,
+        'scan_path': scan_path,
+        'scan_fingerprint': scan_fingerprint or {},
         'targets': [_target_to_dict(target) for target in result.targets],
         'plans': [_plan_to_dict(plan) for plan in result.plans],
         'warnings': list(result.warnings or []),

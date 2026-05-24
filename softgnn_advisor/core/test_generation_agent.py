@@ -95,8 +95,38 @@ class TestGenerationAgent:
             raise ValueError("mode must be 'plan' or 'patch'")
         if generation_strategy not in ('template', 'llm', 'auto'):
             raise ValueError("generation_strategy must be one of: template, llm, auto")
-        warnings = []
         scan = self.scanner.scan(base=base, head=head, mode='deterministic', max_impact=20, suggest_tests=True, change_source=change_source)
+        return self.plan_from_scan(
+            scan,
+            mode=mode,
+            base=base,
+            head=head,
+            max_targets=max_targets,
+            verify=verify,
+            repair_iters=repair_iters,
+            target_id=target_id,
+            source_file=source_file,
+            refresh_runtime=refresh_runtime,
+            runtime_mode=runtime_mode,
+            confirm_pr_scan=confirm_pr_scan,
+            keep_failing_tests=keep_failing_tests,
+            pytest_args=pytest_args,
+            generation_strategy=generation_strategy,
+            llm_required=llm_required,
+            llm_temperature=llm_temperature,
+            llm_max_tokens=llm_max_tokens,
+            change_source=change_source,
+            partial_rollback=partial_rollback,
+            pytest_stream=pytest_stream,
+            failure_feedback=failure_feedback,
+        )
+
+    def plan_from_scan(self, scan, mode='plan', base='main', head='HEAD', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=False, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto', partial_rollback=True, pytest_stream=True, failure_feedback=None):
+        if mode not in ('plan', 'patch'):
+            raise ValueError("mode must be 'plan' or 'patch'")
+        if generation_strategy not in ('template', 'llm', 'auto'):
+            raise ValueError("generation_strategy must be one of: template, llm, auto")
+        warnings = []
         pre_missing_count = len(scan.missing_coverage)
         if target_id:
             if not source_file:
@@ -907,6 +937,9 @@ def {test_name}():
         color_code = colors.get(color, colors['cyan'])
         banner = f'{bold}{color_code}== SOFTGNN {label} =={reset}'
         print(f'\n{banner} {color_code}{message}{reset}', flush=True)
+
+    def print_stage(self, stage, message):
+        self._print_status(stage, message, 'cyan')
 
     def _rollback_plan_snapshot(self, plan, snapshots):
         rel_path = self._plan_rel_path(plan)
