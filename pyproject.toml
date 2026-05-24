@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "softgnn-advisor"
-version = "0.1.14"
+version = "0.1.15"
 description = "Graph-guided, runtime-proven, LLM-assisted PR test generation for Python projects"
 readme = "README.md"
 license = { text = "MIT" }

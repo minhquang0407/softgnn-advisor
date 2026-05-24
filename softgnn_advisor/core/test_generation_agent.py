@@ -838,21 +838,12 @@ def {test_name}():
         kept_files = []
         any_failed = False
         written_files = set(self._plan_rel_path(plan) for plan in plans)
-        rolled_back_files = set()
         for plan in plans:
             rel_path = self._plan_rel_path(plan)
             if rel_path not in written_files:
                 continue
-            if rel_path in rolled_back_files:
-                output = f'Skipped verification for {rel_path}; the file was already rolled back after an earlier failing target in the same apply run.'
-                all_outputs.append(output)
-                any_failed = True
-                status = 'rolled_back'
-                self._print_status('ROLLBACK', f'Skipped already rolled back generated test: {rel_path}', 'red')
-                verification_results.append(PlanVerificationResult(plan.target_id, rel_path, str(rel_path), 1, output, status, []))
-                continue
-            pytest_target = rel_path if not pytest_args else pytest_args
-            self._print_status('RUN', f'Running pytest for {rel_path}', 'cyan')
+            pytest_target = self._pytest_target_for_plan(plan, rel_path, pytest_args)
+            self._print_status('RUN', f'Running pytest for {pytest_target}', 'cyan')
             returncode, output = self._run_pytest(self._pytest_targets([rel_path], pytest_target), stream=pytest_stream)
             all_outputs.append(output)
             plan_repairs = []
@@ -861,7 +852,7 @@ def {test_name}():
             while returncode and remaining_repairs > 0:
                 iteration += 1
                 action = self._repair_generated_tests([plan], output, warnings, generation_strategy, llm_required, llm_temperature, llm_max_tokens)
-                self._print_status('REPAIR', f'Attempt {iteration} for {rel_path}: {action}', 'yellow')
+                self._print_status('REPAIR', f'Attempt {iteration} for {rel_path} [{plan.target_id}]: {action}', 'yellow')
                 returncode, output = self._run_pytest(self._pytest_targets([rel_path], pytest_target), stream=pytest_stream)
                 attempt = RepairAttempt(iteration, action, returncode, output)
                 plan_repairs.append(attempt)
@@ -873,19 +864,20 @@ def {test_name}():
             if returncode == 0:
                 status = 'kept'
                 kept_files.append(rel_path)
-                self._print_status('PASS', f'Kept {rel_path}', 'green')
+                self._print_status('PASS', f'Kept generated block: {rel_path} [{plan.target_id}]', 'green')
             else:
                 any_failed = True
                 all_failures.extend(self._parse_pytest_failures(output))
                 if keep_failing_tests:
                     status = 'kept_failing'
                     kept_files.append(rel_path)
-                    self._print_status('FAIL', f'Kept failing test for debugging: {rel_path}', 'magenta')
+                    self._print_status('FAIL', f'Kept failing generated block for debugging: {rel_path} [{plan.target_id}]', 'magenta')
                 elif partial_rollback:
                     status = 'rolled_back'
-                    self._rollback_plan_snapshot(plan, snapshots)
-                    rolled_back_files.add(rel_path)
-                    self._print_status('ROLLBACK', f'Rolled back failing generated test: {rel_path}', 'red')
+                    self._remove_generated_block_for_target(plan, snapshots)
+                    if self._generated_file_has_content(rel_path):
+                        kept_files.append(rel_path)
+                    self._print_status('ROLLBACK', f'Removed failing generated block: {rel_path} [{plan.target_id}]', 'red')
                 else:
                     status = 'failed_pending_batch_rollback'
                     self._print_status('FAIL', f'Pending batch rollback: {rel_path}', 'red')
@@ -898,7 +890,7 @@ def {test_name}():
                     result.status = 'batch_rolled_back'
             warnings.append('Batch rollback complete: all generated tests were restored because verification failed.')
         elif any_failed and not keep_failing_tests and partial_rollback:
-            warnings.append('Partial rollback complete: kept passing generated tests and rolled back failing generated tests.')
+            warnings.append('Block rollback complete: kept passing generated blocks and removed failing generated blocks.')
         pytest_returncode = 1 if any_failed else 0
         return verification_results, sorted(set(kept_files)), pytest_returncode, '\n'.join(all_outputs), all_failures, all_repairs, any_failed and not keep_failing_tests
 
@@ -920,6 +912,35 @@ def {test_name}():
         rel_path = self._plan_rel_path(plan)
         abs_path = os.path.join(self.repo_path, rel_path.replace('/', os.sep))
         self._rollback_snapshots({abs_path: snapshots.get(abs_path)})
+
+    def _pytest_target_for_plan(self, plan, rel_path, pytest_args=None):
+        if pytest_args:
+            return pytest_args
+        names = list(getattr(plan, 'test_names', None) or self._test_function_names(getattr(plan, 'code', '') or ''))
+        if len(names) == 1:
+            return f'{rel_path}::{names[0]}'
+        return rel_path
+
+    def _remove_generated_block_for_target(self, plan, snapshots):
+        rel_path = self._plan_rel_path(plan)
+        abs_path = os.path.join(self.repo_path, rel_path.replace('/', os.sep))
+        if not os.path.exists(abs_path):
+            return
+        content = self._read_text(abs_path)
+        pattern = re.compile(
+            rf'# <softgnn-generated target="{re.escape(plan.target_id)}" start>.*?# <softgnn-generated target="{re.escape(plan.target_id)}" end>\n?',
+            flags=re.DOTALL,
+        )
+        new_content = pattern.sub('', content).rstrip() + '\n'
+        original = snapshots.get(abs_path)
+        if original is None and not new_content.strip():
+            os.remove(abs_path)
+        else:
+            Path(abs_path).write_text(new_content, encoding='utf-8')
+
+    def _generated_file_has_content(self, rel_path):
+        abs_path = os.path.join(self.repo_path, rel_path.replace('/', os.sep))
+        return os.path.exists(abs_path) and bool(self._read_text(abs_path).strip())
 
     def _pytest_targets(self, files_written, pytest_args):
         if pytest_args:
@@ -987,6 +1008,7 @@ def {test_name}():
                 'pytest_returncode': item.returncode,
                 'pytest_output_tail': (item.output or '')[-4000:],
                 'previous_generated_code': getattr(plan, 'code', ''),
+                'rollback_scope': 'generated_block' if item.status == 'rolled_back' else None,
             })
         payload = {
             'run_id': run_id,
