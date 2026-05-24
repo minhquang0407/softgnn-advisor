@@ -168,11 +168,11 @@ A visual report makes the repo easier to understand, demo, and share. This is im
 
 ---
 
-# M6 — Learned Test Prioritization / GNN Ranking
+# M6 — Learned GNN Ranking, CI Subset Selection, and Apply-Run Dataset
 
 ## Goal
 
-Make the `GNN` part of SoftGNN more central by learning/ranking from the graph.
+Make the `GNN` part of SoftGNN research-relevant by learning from graph structure, runtime evidence, and real apply-run history to rank targets, select CI subsets, and improve test generation over time.
 
 ## Core Idea
 
@@ -185,35 +185,127 @@ which missing tests should be generated first
 which tests should be prioritized in CI
 ```
 
-## Graph Inputs
+And learn from historical apply-run outcomes:
 
 ```text
-Function nodes
-Class nodes
-File nodes
-TestFunction nodes
-imports/calls/static edges
-executes_runtime edges
-changed_in_pr edges
-historical failure edges later
+Code graph + runtime test graph + PR changes + apply-run outcomes
+  -> learned ranker
+  -> better target selection
+  -> better CI subset selection
+  -> lower LLM cost
+  -> stronger AI/research differentiation
 ```
 
-## Planned Commands
+## Apply-Run Dataset
 
-```powershell
-python softgnn.py rank-tests --project social-link --base main --head HEAD
+Persist every generation/apply attempt as structured training data:
+
+```text
+target_id
+source_file
+test_file
+selected strategy
+generated test names
+pytest target
+pytest return code
+pass/fail/rollback status
+rollback scope
+repair attempts
+error type
+pytest output tail
+runtime proof before/after
+coverage delta
+side-effect skip reason
+replan iteration
+final accepted/rejected decision
+```
+
+This dataset becomes the feedback loop for learned ranking.
+
+## Graph Inputs
+
+Train an optional GNN ranker over SoftGNN's heterogeneous graph:
+
+```text
+Nodes:
+- File
+- Function
+- Class
+- TestFunction
+- Commit
+- Developer
+- ApplyRun
+- PytestFailure
+
+Edges:
+- imports
+- calls
+- defines
+- covers_static
+- executes_runtime
+- changed_in_pr
+- generated_for
+- failed_with
+- repaired_by
+- rolled_back
+- accepted
+```
+
+Predictions:
+
+```text
+P(target should be tested)
+P(generated test will pass)
+P(target is side-effect risky)
+P(test is relevant to PR)
+P(existing test will fail)
+```
+
+## CI Test Subset Selection
+
+Use the learned ranker to recommend a small, high-value subset of tests for a PR:
+
+```text
+changed nodes -> candidate related tests -> ranked subset -> CI shard
 ```
 
 Example output:
 
 ```text
-1. tests/test_train_model.py::test_is_edge_index_sorted  score=0.92
-2. tests/test_train_model.py::test_train_one_config      score=0.75
+Recommended CI subset for this PR:
+1. tests/test_ingestion.py::test_run_ingestion_pipeline  score=0.94
+2. tests/test_structural_db.py::test_upsert_section      score=0.82
+3. tests/test_graph_builder.py::test_route_start         score=0.71
+
+Estimated subset size: 3 / 248 tests
+Reason: high graph proximity + historical runtime relevance + apply-run outcomes
+```
+
+## Planned Commands
+
+```powershell
+softgnn collect-runs --project social-link
+softgnn train-ranker --project social-link --model gnn
+softgnn rank-targets --project social-link --base main --head HEAD --ranker gnn
+softgnn select-tests --project social-link --base main --head HEAD --budget 20 --ranker gnn
 ```
 
 ## Why It Matters
 
-This separates SoftGNN from generic LLM test generators. The system becomes graph-intelligent, not just prompt-driven.
+This separates SoftGNN from generic LLM test generators. The system becomes graph-intelligent and adaptive:
+
+```text
+Generic LLM tools generate tests from prompts.
+SoftGNN learns from graph structure, runtime proof, and historical apply outcomes.
+```
+
+The learned ranker makes the system improve over time:
+
+```text
+more usage -> better ranking -> fewer bad generations -> lower token cost -> better CI subsets
+```
+
+This is the clearest path to making SoftGNN a research-grade AI testing system rather than only a graph-guided LLM wrapper.
 
 ---
 
@@ -422,141 +514,8 @@ This is a separate ML/model-ops layer and should come after the product workflow
 
 ---
 
-# M12 — Research GNN Ranker, CI Subset Selection, and Apply-Run Learning Dataset
-
-## Goal
-
-Make SoftGNN meaningfully different from generic LLM test generators by turning its graph, runtime, and apply-run history into a learned ranking system.
-
-This milestone makes the `GNN` part research-relevant while keeping the default product workflow useful without heavy ML dependencies.
-
-## Core Idea
-
-SoftGNN should learn from real repository structure and real generation outcomes:
-
-```text
-Code graph + runtime test graph + PR changes + apply-run outcomes
-  -> learned ranker
-  -> better target selection
-  -> better CI subset selection
-  -> lower LLM cost
-  -> stronger AI/research differentiation
-```
-
-## Apply-Run Dataset
-
-Persist every generation/apply attempt as structured training data:
-
-```text
-target_id
-source_file
-test_file
-selected strategy
-generated test names
-pytest target
-pytest return code
-pass/fail/rollback status
-rollback scope
-repair attempts
-error type
-pytest output tail
-runtime proof before/after
-coverage delta
-side-effect skip reason
-replan iteration
-final accepted/rejected decision
-```
-
-This dataset becomes the feedback loop for learned ranking.
-
-## GNN Ranker
-
-Train an optional GNN ranker over SoftGNN's heterogeneous graph:
-
-```text
-Nodes:
-- File
-- Function
-- Class
-- TestFunction
-- Commit
-- Developer
-- ApplyRun
-- PytestFailure
-
-Edges:
-- imports
-- calls
-- defines
-- covers_static
-- executes_runtime
-- changed_in_pr
-- generated_for
-- failed_with
-- repaired_by
-- rolled_back
-- accepted
-```
-
-Predictions:
-
-```text
-P(target should be tested)
-P(generated test will pass)
-P(target is side-effect risky)
-P(test is relevant to PR)
-P(existing test will fail)
-```
-
-## CI Test Subset Selection
-
-Use the learned ranker to recommend a small, high-value subset of tests for a PR:
-
-```text
-changed nodes -> candidate related tests -> ranked subset -> CI shard
-```
-
-Example output:
-
-```text
-Recommended CI subset for this PR:
-1. tests/test_ingestion.py::test_run_ingestion_pipeline  score=0.94
-2. tests/test_structural_db.py::test_upsert_section      score=0.82
-3. tests/test_graph_builder.py::test_route_start         score=0.71
-
-Estimated subset size: 3 / 248 tests
-Reason: high graph proximity + historical runtime relevance + apply-run outcomes
-```
-
-## Planned Commands
-
-```powershell
-softgnn collect-runs --project social-link
-softgnn train-ranker --project social-link --model gnn
-softgnn rank-targets --project social-link --base main --head HEAD --ranker gnn
-softgnn select-tests --project social-link --base main --head HEAD --budget 20 --ranker gnn
-```
-
-## Product Differentiation
-
-This milestone gives SoftGNN a stronger AI/research story:
-
-```text
-Generic LLM tools generate tests from prompts.
-SoftGNN learns from graph structure, runtime proof, and historical apply outcomes.
-```
-
-## Why It Matters
-
-The current workflow is already useful with deterministic graph ranking. The learned ranker makes it adaptive:
-
-```text
-more usage -> better ranking -> fewer bad generations -> lower token cost -> better CI subsets
-```
-
-This is the clearest path to making SoftGNN a research-grade AI testing system rather than only a graph-guided LLM wrapper.
-
 ---
+
 
 # Recommended Priority Order
 
@@ -564,7 +523,7 @@ This is the clearest path to making SoftGNN a research-grade AI testing system r
 1. Polish v0.1 GitHub release
 2. M4 Runtime-Proven Test Generation
 3. M5 Graph Impact Report / Dashboard
-4. M6 Learned Test Prioritization / GNN Ranking
+4. M6 Learned GNN Ranking, CI Subset Selection, and Apply-Run Dataset
 5. M7 Multi-Agent Quality Swarm
 6. M8 Large-Scale Repo Automation
 7. M9 Controlled Production-Code Fixes
