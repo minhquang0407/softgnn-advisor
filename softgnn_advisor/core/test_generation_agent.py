@@ -105,7 +105,7 @@ class TestGenerationAgent:
                 raise ValueError('source_file is required when target_id cannot be resolved from PR scan')
             targets = [TestGenerationTarget(target_id, source_file, 'explicit target override', 999.0, ['explicit user/CLI target'], self._suggest_test_file(source_file))]
         else:
-            targets = self._rank_targets(scan)[:max_targets]
+            targets = self._rank_targets(scan, warnings)[:max_targets]
         plans = [self._build_plan(target, generation_strategy, warnings, llm_required, llm_temperature, llm_max_tokens, failure_feedback=failure_feedback) for target in targets]
         files_written = []
         pytest_returncode = None
@@ -146,15 +146,20 @@ class TestGenerationAgent:
                         post_missing_count = len(post_scan.missing_coverage)
         return TestGenerationResult(targets, plans, files_written, pytest_returncode, pytest_output, warnings + scan.warnings, mode, failures, repair_attempts, rolled_back, runtime_result, post_scan, pre_missing_count, post_missing_count, verification_results)
 
-    def _rank_targets(self, scan):
+    def _rank_targets(self, scan, warnings=None):
+        warnings = warnings if warnings is not None else []
         changed_by_id = {node.full_id: node for node in scan.changed_nodes}
         contract_by_id = {change.function_id: change for change in scan.contract_changes}
         hotspot_labels = {h.label: h for h in scan.impact_hotspots}
         suggestions = {cover: suggestion for suggestion in scan.suggested_tests for cover in suggestion.covers}
         targets = []
+        skipped_side_effects = []
         for gap in scan.missing_coverage:
             node = changed_by_id.get(gap.target_id)
             if not node or node.node_type != 'Function':
+                continue
+            if self._is_risky_entrypoint_target(node):
+                skipped_side_effects.append(f'{gap.target_id} ({node.source_file})')
                 continue
             priority = 100.0
             evidence = [gap.reason]
@@ -176,8 +181,71 @@ class TestGenerationAgent:
                 evidence.append('high impact hotspot')
             suggested_file = suggestions.get(gap.target_id).suggested_file if gap.target_id in suggestions else self._suggest_test_file(node.source_file)
             targets.append(TestGenerationTarget(gap.target_id, node.source_file, gap.reason, priority, evidence, suggested_file))
+        if skipped_side_effects:
+            warnings.append('Skipped import-time side-effect target(s): ' + '; '.join(skipped_side_effects) + '. These look like Streamlit/app entrypoints and are safer to test after refactoring UI/runtime code behind a function or guard.')
+            for skipped in skipped_side_effects:
+                self._print_status('SKIP', f'Import-time side-effect target: {skipped}', 'magenta')
         targets.sort(key=lambda t: t.priority, reverse=True)
         return targets
+
+    def _is_risky_entrypoint_target(self, node):
+        source_file = (getattr(node, 'source_file', '') or '').replace('\\', '/')
+        if not source_file:
+            return False
+        basename = os.path.basename(source_file)
+        if basename not in {'main.py', 'app.py', 'streamlit_app.py'}:
+            return False
+        try:
+            text = Path(self.repo_path, source_file).read_text(encoding='utf-8', errors='ignore')
+        except OSError:
+            return False
+        return self._has_import_time_side_effects(text)
+
+    def _has_import_time_side_effects(self, text):
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return False
+        risky_modules = {'streamlit'}
+        streamlit_aliases = set()
+        risky_imports = False
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Import):
+                for alias in stmt.names:
+                    root = alias.name.split('.', 1)[0]
+                    if root in risky_modules:
+                        streamlit_aliases.add(alias.asname or root)
+                        risky_imports = True
+            elif isinstance(stmt, ast.ImportFrom):
+                root = (stmt.module or '').split('.', 1)[0]
+                if root in risky_modules:
+                    risky_imports = True
+        for stmt in tree.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
+                continue
+            if self._node_calls_name(stmt, {'init_system', 'run_ingestion_pipeline'}):
+                return True
+            if streamlit_aliases and self._node_uses_streamlit_call(stmt, streamlit_aliases):
+                return True
+        return risky_imports and any(not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign)) for stmt in tree.body)
+
+    def _node_calls_name(self, node, names):
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                func = child.func
+                if isinstance(func, ast.Name) and func.id in names:
+                    return True
+                if isinstance(func, ast.Attribute) and func.attr in names:
+                    return True
+        return False
+
+    def _node_uses_streamlit_call(self, node, aliases):
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                func = child.func
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id in aliases:
+                    return True
+        return False
 
     def _infer_source_file(self, target_id, scan):
         for node in scan.changed_nodes:
