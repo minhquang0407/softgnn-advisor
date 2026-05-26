@@ -1097,6 +1097,42 @@ def _render_generation(agent, result):
     return markdown
 
 
+def _render_apply_result(result):
+    """Print a compact apply summary — no plan table reprint."""
+    kept = [f for f in (result.files_written or [])]
+    rolled = [v for v in (result.failures or []) if isinstance(v, dict) and v.get('rolled_back')]
+    repairs = result.repair_attempts or []
+
+    summary = Table(title="Apply Result")
+    summary.add_column("Metric", style="cyan")
+    summary.add_column("Value", style="green")
+    summary.add_row("Targets attempted", str(len(result.plans or [])))
+    summary.add_row("Blocks kept", str(len(kept)))
+    summary.add_row("Blocks rolled back", str(len(rolled)))
+    summary.add_row("Repair attempts", str(len(repairs)))
+    if result.pytest_returncode is not None:
+        status = "[green]PASS[/green]" if result.pytest_returncode == 0 else "[red]FAIL[/red]"
+        summary.add_row("Pytest final", status)
+    if result.runtime_result:
+        summary.add_row("Runtime edges", str(len(result.runtime_result.runtime_edges)))
+    if result.pre_missing_count is not None and result.post_missing_count is not None:
+        delta = result.pre_missing_count - result.post_missing_count
+        summary.add_row("Missing coverage delta", f"-{delta}" if delta >= 0 else f"+{abs(delta)}")
+    console.print(summary)
+    if result.warnings:
+        unique_warnings = []
+        seen = set()
+        for w in result.warnings:
+            if w not in seen:
+                unique_warnings.append(w)
+                seen.add(w)
+        for w in unique_warnings[:5]:
+            console.print(f"[yellow]{w}[/yellow]")
+        if len(unique_warnings) > 5:
+            console.print(f"[yellow]... and {len(unique_warnings) - 5} more warnings[/yellow]")
+
+
+
 @cli.command('setup')
 @click.argument('repo_path')
 @click.option('--project', default=None, help='Project name; defaults to repository folder name')
@@ -1337,7 +1373,7 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
         partial_rollback=partial_rollback,
         pytest_stream=pytest_stream,
     )
-    _render_generation(agent, result)
+    _render_apply_result(result)
     for iteration in range(1, max(0, int(replan_iters or 0)) + 1):
         feedback = agent._apply_feedback_from_result(result)
         if not feedback:
@@ -1394,7 +1430,7 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
             partial_rollback=partial_rollback,
             pytest_stream=pytest_stream,
         )
-        _render_generation(agent, result)
+        _render_apply_result(result)
 
 
 @cli.command('apply')
@@ -1491,7 +1527,7 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
         partial_rollback=partial_rollback,
         pytest_stream=pytest_stream,
     )
-    _render_generation(agent, result)
+    _render_apply_result(result)
 
 
 @cli.command('map')

@@ -1,4 +1,4 @@
-﻿import ast
+import ast
 import os
 import re
 from collections import Counter, defaultdict
@@ -110,7 +110,14 @@ class PRScanner:
         related_tests = self._find_related_tests(changed_nodes, impact_hotspots)
         missing_coverage = self._find_missing_coverage(changed_nodes, contract_changes, related_tests)
         tests = self._suggest_tests(changed_nodes, impact_hotspots, missing_coverage) if suggest_tests else []
-        return PRScanResult(changed_files, changed_nodes, impact_hotspots, reviewers, tests, warnings, contract_changes, related_tests, missing_coverage, change_set.source)
+        # dedup warnings while preserving order
+        seen_warnings = set()
+        deduped_warnings = []
+        for w in warnings:
+            if w not in seen_warnings:
+                seen_warnings.add(w)
+                deduped_warnings.append(w)
+        return PRScanResult(changed_files, changed_nodes, impact_hotspots, reviewers, tests, deduped_warnings, contract_changes, related_tests, missing_coverage, change_set.source)
 
     def _read_changed_files(self, base, head, warnings, change_source='auto'):
         change_set = build_change_set(self.project, self.repo_path, base=base, head=head, change_source=change_source)
