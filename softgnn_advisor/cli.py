@@ -1099,30 +1099,35 @@ def _render_generation(agent, result):
 
 def _render_apply_result(result):
     """Print a compact apply summary — no plan table reprint."""
-    kept = [f for f in (result.files_written or [])]
-    rolled = [v for v in (result.failures or []) if isinstance(v, dict) and v.get('rolled_back')]
-    repairs = result.repair_attempts or []
+    kept = [f for f in (getattr(result, 'files_written', None) or [])]
+    rolled = [v for v in (getattr(result, 'failures', None) or []) if isinstance(v, dict) and v.get('rolled_back')]
+    repairs = getattr(result, 'repair_attempts', None) or []
 
     summary = Table(title="Apply Result")
     summary.add_column("Metric", style="cyan")
     summary.add_column("Value", style="green")
-    summary.add_row("Targets attempted", str(len(result.plans or [])))
+    summary.add_row("Targets attempted", str(len(getattr(result, 'plans', None) or [])))
     summary.add_row("Blocks kept", str(len(kept)))
     summary.add_row("Blocks rolled back", str(len(rolled)))
     summary.add_row("Repair attempts", str(len(repairs)))
-    if result.pytest_returncode is not None:
-        status = "[green]PASS[/green]" if result.pytest_returncode == 0 else "[red]FAIL[/red]"
+    pytest_returncode = getattr(result, 'pytest_returncode', None)
+    if pytest_returncode is not None:
+        status = "[green]PASS[/green]" if pytest_returncode == 0 else "[red]FAIL[/red]"
         summary.add_row("Pytest final", status)
-    if result.runtime_result:
-        summary.add_row("Runtime edges", str(len(result.runtime_result.runtime_edges)))
-    if result.pre_missing_count is not None and result.post_missing_count is not None:
-        delta = result.pre_missing_count - result.post_missing_count
+    runtime_result = getattr(result, 'runtime_result', None)
+    if runtime_result:
+        summary.add_row("Runtime edges", str(len(runtime_result.runtime_edges)))
+    pre_missing_count = getattr(result, 'pre_missing_count', None)
+    post_missing_count = getattr(result, 'post_missing_count', None)
+    if pre_missing_count is not None and post_missing_count is not None:
+        delta = pre_missing_count - post_missing_count
         summary.add_row("Missing coverage delta", f"-{delta}" if delta >= 0 else f"+{abs(delta)}")
     console.print(summary)
-    if result.warnings:
+    warnings = getattr(result, 'warnings', None) or []
+    if warnings:
         unique_warnings = []
         seen = set()
-        for w in result.warnings:
+        for w in warnings:
             if w not in seen:
                 unique_warnings.append(w)
                 seen.add(w)
