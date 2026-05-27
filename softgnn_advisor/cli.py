@@ -1329,8 +1329,48 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
     scanner = PRScanner(project, repo_path=repo_path)
     scan_result = scanner.scan(base=base, head=head, mode='hybrid', max_impact=30, change_source=source)
     scan_path, latest_scan_path, scan_bundle = save_scan_bundle(project, scan_result, repo_path, base=base, head=head, change_source=source, mode='hybrid')
+
+    # --- Scan summary ---------------------------------------------------------
+    for warning in scan_result.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+    scan_summary = Table(title="Scan Summary")
+    scan_summary.add_column("Metric", style="cyan")
+    scan_summary.add_column("Value", style="green")
+    scan_summary.add_row("Change source", scan_result.change_source)
+    scan_summary.add_row("Changed files", str(len(scan_result.changed_files)))
+    scan_summary.add_row("Changed graph nodes", str(len(scan_result.changed_nodes)))
+    scan_summary.add_row("Missing coverage targets", str(len(scan_result.missing_coverage)))
+    scan_summary.add_row("Related existing tests", str(len(scan_result.related_tests)))
+    console.print(scan_summary)
+
+    if scan_result.changed_nodes:
+        nodes_table = Table(title="Changed Nodes")
+        nodes_table.add_column("#", justify="right", style="cyan", width=4)
+        nodes_table.add_column("Type", style="blue", width=10)
+        nodes_table.add_column("ID", style="magenta")
+        nodes_table.add_column("File", style="white")
+        for idx, node in enumerate(scan_result.changed_nodes[:10], start=1):
+            nodes_table.add_row(str(idx), node.node_type, node.full_id, node.source_file)
+        if len(scan_result.changed_nodes) > 10:
+            nodes_table.add_row("...", "", f"... and {len(scan_result.changed_nodes) - 10} more", "")
+        console.print(nodes_table)
+
+    if scan_result.missing_coverage:
+        missing_table = Table(title="Missing Coverage Targets")
+        missing_table.add_column("#", justify="right", style="cyan", width=4)
+        missing_table.add_column("Target", style="yellow")
+        missing_table.add_column("File", style="white")
+        for idx, mc in enumerate(scan_result.missing_coverage[:8], start=1):
+            missing_table.add_row(str(idx), mc.target_id, mc.source_file)
+        if len(scan_result.missing_coverage) > 8:
+            missing_table.add_row("...", f"... and {len(scan_result.missing_coverage) - 8} more", "")
+        console.print(missing_table)
+
     console.print(f"[bold green]Scan saved:[/bold green] {scan_path}")
     console.print(f"[bold green]Latest scan:[/bold green] {latest_scan_path}")
+    # --------------------------------------------------------------------------
+
 
     agent.print_stage('PLAN', 'Generating plan from saved scan')
     plan_result = agent.plan_from_scan(
