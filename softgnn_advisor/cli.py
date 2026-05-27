@@ -1114,6 +1114,15 @@ def _render_apply_result(result):
     if pytest_returncode is not None:
         status = "[green]PASS[/green]" if pytest_returncode == 0 else "[red]FAIL[/red]"
         summary.add_row("Pytest final", status)
+    verification_results = getattr(result, 'verification_results', None) or []
+    proof_pass = sum(1 for item in verification_results if getattr(item, 'proof_status', 'skipped') == 'pass')
+    proof_fail = sum(1 for item in verification_results if getattr(item, 'proof_status', 'skipped') == 'fail')
+    proof_skipped = sum(1 for item in verification_results if getattr(item, 'proof_status', 'skipped') == 'skipped')
+    if proof_pass or proof_fail:
+        summary.add_row("Runtime proof PASS", str(proof_pass))
+        summary.add_row("Runtime proof FAIL", str(proof_fail))
+        if proof_skipped:
+            summary.add_row("Runtime proof skipped", str(proof_skipped))
     runtime_result = getattr(result, 'runtime_result', None)
     if runtime_result:
         summary.add_row("Runtime edges", str(len(runtime_result.runtime_edges)))
@@ -1302,7 +1311,8 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--keep-failing-tests/--rollback-failing-tests', default=False, show_default=True)
 @click.option('--partial-rollback/--batch-rollback', default=True, show_default=True, help='Keep passing generated tests and roll back only failing generated tests')
 @click.option('--pytest-stream/--no-pytest-stream', default=True, show_default=True, help='Stream pytest output while verification runs')
-def simple_generate(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream):
+@click.option('--require-runtime-proof/--no-require-runtime-proof', default=True, show_default=True, help='Rollback generated block if no runtime edge to target is proven after pytest pass')
+def simple_generate(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof):
     """Beginner generate: run scan, plan, save it, then apply that saved plan."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Workflow: scan -> plan -> apply | Replan: plan -> apply using same scan | Pytest: yes | Runtime map: yes[/cyan]")
@@ -1417,6 +1427,7 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
         change_source=source,
         partial_rollback=partial_rollback,
         pytest_stream=pytest_stream,
+        require_runtime_proof=require_runtime_proof,
     )
     _render_apply_result(result)
     for iteration in range(1, max(0, int(replan_iters or 0)) + 1):
@@ -1474,6 +1485,7 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
             change_source=source,
             partial_rollback=partial_rollback,
             pytest_stream=pytest_stream,
+            require_runtime_proof=require_runtime_proof,
         )
         _render_apply_result(result)
 
@@ -1504,7 +1516,8 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
 @click.option('--keep-failing-tests/--rollback-failing-tests', default=False, show_default=True)
 @click.option('--partial-rollback/--batch-rollback', default=True, show_default=True, help='Keep passing generated tests and roll back only failing generated tests')
 @click.option('--pytest-stream/--no-pytest-stream', default=True, show_default=True, help='Stream pytest output while verification runs')
-def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, pytest_args, keep_failing_tests, partial_rollback, pytest_stream):
+@click.option('--require-runtime-proof/--no-require-runtime-proof', default=True, show_default=True, help='Rollback generated block if no runtime edge to target is proven after pytest pass')
+def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof):
     """Beginner apply: load a saved plan, patch tests, verify, rollback failures, map runtime."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Writes: tests only | Pytest: yes | Runtime map: yes[/cyan]")
@@ -1571,6 +1584,7 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
         change_source=source,
         partial_rollback=partial_rollback,
         pytest_stream=pytest_stream,
+        require_runtime_proof=require_runtime_proof,
     )
     _render_apply_result(result)
 

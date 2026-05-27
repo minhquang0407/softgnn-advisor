@@ -59,6 +59,10 @@ class PlanVerificationResult:
     output: str
     status: str
     repair_attempts: list = field(default_factory=list)
+    # M4: runtime proof
+    proof_status: str = 'skipped'   # 'pass', 'fail', 'skipped'
+    proof_edges: list = field(default_factory=list)
+    proof_message: str = ''
 
 
 @dataclass
@@ -764,7 +768,7 @@ def {test_name}():
     assert callable({fn_name})
 '''
 
-    def apply_saved_plans(self, plans, base='main', head='HEAD', verify=True, repair_iters=2, refresh_runtime=True, runtime_mode='per-test', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto', partial_rollback=True, pytest_stream=True):
+    def apply_saved_plans(self, plans, base='main', head='HEAD', verify=True, repair_iters=2, refresh_runtime=True, runtime_mode='per-test', confirm_pr_scan=True, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto', partial_rollback=True, pytest_stream=True, require_runtime_proof=True):
         warnings = []
         files_written = []
         pytest_returncode = None
@@ -792,6 +796,7 @@ def {test_name}():
                 llm_max_tokens=llm_max_tokens,
                 partial_rollback=partial_rollback,
                 pytest_stream=pytest_stream,
+                require_runtime_proof=(require_runtime_proof and refresh_runtime),
             )
             files_written = kept_files
             if kept_files and refresh_runtime:
@@ -860,7 +865,7 @@ def {test_name}():
             rel_path = 'tests/' + os.path.basename(rel_path)
         return rel_path
 
-    def _verify_written_plans(self, plans, snapshots, warnings, repair_iters=0, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, partial_rollback=True, pytest_stream=True):
+    def _verify_written_plans(self, plans, snapshots, warnings, repair_iters=0, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, partial_rollback=True, pytest_stream=True, require_runtime_proof=True):
         verification_results = []
         all_outputs = []
         all_failures = []
@@ -891,10 +896,29 @@ def {test_name}():
                 remaining_repairs -= 1
                 if action == 'no-op':
                     break
+            proof_status = 'skipped'
+            proof_edges = []
+            proof_message = ''
             if returncode == 0:
                 status = 'kept'
-                kept_files.append(rel_path)
-                self._print_status('PASS', f'Kept generated block: {rel_path} [{plan.target_id}]', 'green')
+                # M4: per-block runtime proof check (only when enabled)
+                if require_runtime_proof:
+                    block_edges = self._run_per_block_runtime_map(plan, rel_path)
+                    proof_status, proof_edges, proof_message = self._check_runtime_proof(plan, block_edges)
+                    if proof_status == 'pass':
+                        self._print_status('PROOF PASS', proof_message, 'green')
+                        kept_files.append(rel_path)
+                        self._print_status('PASS', f'Kept generated block: {rel_path} [{plan.target_id}]', 'green')
+                    else:
+                        self._print_status('PROOF FAIL', proof_message + ' — rolling back block', 'red')
+                        status = 'proof_rolled_back'
+                        any_failed = True
+                        self._remove_generated_block_for_target(plan, snapshots)
+                        if self._generated_file_has_content(rel_path):
+                            kept_files.append(rel_path)
+                else:
+                    kept_files.append(rel_path)
+                    self._print_status('PASS', f'Kept generated block: {rel_path} [{plan.target_id}]', 'green')
             else:
                 any_failed = True
                 all_failures.extend(self._parse_pytest_failures(output))
@@ -911,7 +935,10 @@ def {test_name}():
                 else:
                     status = 'failed_pending_batch_rollback'
                     self._print_status('FAIL', f'Pending batch rollback: {rel_path}', 'red')
-            verification_results.append(PlanVerificationResult(plan.target_id, rel_path, str(pytest_target), returncode, output, status, plan_repairs))
+            verification_results.append(PlanVerificationResult(
+                plan.target_id, rel_path, str(pytest_target), returncode, output, status,
+                plan_repairs, proof_status, proof_edges, proof_message,
+            ))
         if any_failed and not keep_failing_tests and not partial_rollback:
             self._rollback_snapshots(snapshots)
             kept_files = []
@@ -923,6 +950,59 @@ def {test_name}():
             warnings.append('Block rollback complete: kept passing generated blocks and removed failing generated blocks.')
         pytest_returncode = 1 if any_failed else 0
         return verification_results, sorted(set(kept_files)), pytest_returncode, '\n'.join(all_outputs), all_failures, all_repairs, any_failed and not keep_failing_tests
+
+    # ------------------------------------------------------------------ M4 helpers
+
+    def _run_per_block_runtime_map(self, plan, rel_path):
+        """Run per-test coverage for just the test(s) in this block. Returns list[RuntimeCoverageEdge]."""
+        test_names = list(getattr(plan, 'test_names', None) or
+                          self._test_function_names(getattr(plan, 'code', '') or ''))
+        if not test_names:
+            return []
+        # Scope to first test name if single; else whole file (per-test mode will split)
+        if len(test_names) == 1:
+            pytest_scope = f'{rel_path}::{test_names[0]}'
+        else:
+            pytest_scope = rel_path
+        try:
+            mapper = RuntimeCoverageMapper(self.project, repo_path=self.repo_path)
+            result = mapper.map_runtime_coverage(
+                pytest_args=pytest_scope,
+                mode='per-test',
+                persist=False,  # proof-only; global persist happens later
+            )
+            return result.runtime_edges
+        except Exception:
+            return []
+
+    def _check_runtime_proof(self, plan, runtime_edges):
+        """Check if any edge in runtime_edges links a test in this plan to its target.
+
+        Returns (proof_status, matching_edges, message).
+        proof_status: 'pass' | 'fail'
+        """
+        test_names = set(getattr(plan, 'test_names', None) or
+                         self._test_function_names(getattr(plan, 'code', '') or ''))
+        target_id = plan.target_id  # e.g. FUNC:run_ingestion_pipeline
+
+        matching = [
+            e for e in runtime_edges
+            if e.target_id == target_id
+            and any(name in e.test_id for name in test_names)
+        ]
+        if matching:
+            best = max(matching, key=lambda e: e.covered_fraction)
+            short_test = best.test_id.split('::')[-1]
+            msg = (f'edge confirmed: {short_test} → {target_id} '
+                   f'({best.covered_fraction:.0%} coverage, {best.covered_line_count}/{best.function_line_count} lines)')
+            return 'pass', matching, msg
+        else:
+            names_str = ', '.join(sorted(test_names)) if test_names else '(none)'
+            msg = (f'no runtime edge to {target_id} — '
+                   f'test(s) [{names_str}] did not execute the target at runtime')
+            return 'fail', [], msg
+
+    # ------------------------------------------------------------------ /M4 helpers
 
     def _print_status(self, label, message, color='cyan'):
         colors = {
@@ -1262,9 +1342,13 @@ Constraints:
         if result.apply_run_path:
             lines += ['## Apply Run', '', f'- Result: `{result.apply_run_path}`', '']
         if result.verification_results:
-            lines += ['## Verification Results', '', '| Test file | Target | Status | Repairs |', '|---|---|---|---|']
+            lines += ['## Verification Results', '', '| Test file | Target | Status | Repairs | Proof |', '|---|---|---|---|---|']
             for item in result.verification_results:
-                lines.append(f'| `{item.test_file}` | `{item.target_id}` | `{item.status}` | `{len(item.repair_attempts)}` |')
+                proof_icon = {'pass': '✅ PASS', 'fail': '❌ FAIL', 'skipped': '—'}.get(
+                    getattr(item, 'proof_status', 'skipped'), '—')
+                proof_detail = getattr(item, 'proof_message', '')
+                proof_cell = f'{proof_icon} {proof_detail}' if proof_detail else proof_icon
+                lines.append(f'| `{item.test_file}` | `{item.target_id}` | `{item.status}` | `{len(item.repair_attempts)}` | {proof_cell} |')
             lines.append('')
         if result.rolled_back:
             lines += ['## Rollback', '', 'Generated edits were rolled back because verification failed.', '']
