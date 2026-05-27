@@ -23,10 +23,10 @@ def cli():
 
 
 @cli.command()
-@click.option('--project', required=True, help='Ten du an (luu tru du lieu rieng biet)')
-@click.option('--path', default='.', help='Duong dan toi repository can quet')
+@click.option('--project', required=True, help='Project name for isolated SoftGNN data')
+@click.option('--path', default='.', help='Path to the repository to scan')
 def etl(project, path):
-    """Quet ma nguon va lich su Git de xay dung Do thi Tri thuc"""
+    """Scan source code and Git history to build the knowledge graph."""
     console.rule(f"[bold blue]SoftGNN ETL Pipeline - Project: {project}")
     console.print(f"Scanning target: [yellow]{os.path.abspath(path)}[/yellow]")
 
@@ -41,9 +41,9 @@ def etl(project, path):
 
 
 @cli.command()
-@click.option('--project', required=True, help='Ten du an can huan luyen')
+@click.option('--project', required=True, help='Project name to train')
 def train(project):
-    """Huan luyen loi AI HGT (Heterogeneous Graph Transformer)"""
+    """Train the HGT (Heterogeneous Graph Transformer) AI core."""
     console.rule(f"[bold magenta]Training Core AI (HGT) - Project: {project}")
 
     from softgnn_advisor.scripts.train_model import run_optimization
@@ -56,11 +56,11 @@ def train(project):
 
 
 @cli.command()
-@click.option('--project', required=True, help='Ten du an')
-@click.option('--path', default='.', help='Duong dan toi repository can quet va huan luyen')
+@click.option('--project', required=True, help='Project name')
+@click.option('--path', default='.', help='Path to the repository to scan and optionally train')
 @click.option('--skip-train/--with-train', default=False, show_default=True, help='Build graph/snapshot without training the HGT model')
 def prepare(project, path, skip_train):
-    """Chay onboarding pipeline: ETL -> optional Train."""
+    """Run the onboarding pipeline: ETL -> optional Train."""
     console.rule(f"[bold cyan]SoftGNN Prepare Pipeline - Project: {project}")
     console.print(f"Step 1/2: ETL for [yellow]{os.path.abspath(path)}[/yellow]")
 
@@ -88,7 +88,7 @@ def prepare(project, path, skip_train):
         raise
 
 @cli.command('generate-tests')
-@click.option('--project', required=True, help='Ten du an')
+@click.option('--project', required=True, help='Project name')
 @click.option('--base', default='main', show_default=True, help='Base git ref')
 @click.option('--head', default='HEAD', show_default=True, help='Head git ref')
 @click.option('--repo-path', default=None, help='Optional repository path override')
@@ -163,7 +163,7 @@ def generate_tests(project, base, head, repo_path, mode, max_targets, target_id,
 
 
 @cli.command('test-map')
-@click.option('--project', required=True, help='Ten du an')
+@click.option('--project', required=True, help='Project name')
 @click.option('--repo-path', default=None, help='Optional repository path override')
 @click.option('--pytest-args', default='tests', show_default=True, help='Arguments passed to pytest')
 @click.option('--mode', type=click.Choice(['auto', 'dynamic-context', 'per-test']), default='auto', show_default=True, help='Runtime coverage mode')
@@ -218,7 +218,7 @@ def test_map(project, repo_path, pytest_args, mode, persist, max_tests):
 
 
 @cli.command('pr-scan')
-@click.option('--project', required=True, help='Ten du an')
+@click.option('--project', required=True, help='Project name')
 @click.option('--base', default='main', show_default=True, help='Base git ref')
 @click.option('--head', default='HEAD', show_default=True, help='Head git ref')
 @click.option('--repo-path', default=None, help='Optional repository path override')
@@ -376,12 +376,12 @@ def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_
 
 
 @cli.command()
-@click.option('--project', required=True, help='Ten du an')
+@click.option('--project', required=True, help='Project name')
 @click.option('--mode', type=click.Choice(['deterministic', 'hybrid', 'gnn']), default='deterministic', show_default=True, help='Impact scoring mode')
 @click.option('--gnn-types', default='File,Class,Function', show_default=True, help='Comma-separated node types for GNN impact candidates')
 @click.argument('function_name')
 def impact(project, mode, gnn_types, function_name):
-    """Du bao ham/file co nguy co bi anh huong khi thay doi target."""
+    """Predict functions/files at risk when changing a target."""
     from softgnn_advisor.core.impact_engine import ImpactEngine
 
     console.print(Panel(
@@ -466,10 +466,10 @@ def impact(project, mode, gnn_types, function_name):
 
 
 @cli.command()
-@click.option('--project', required=True, help='Ten du an')
+@click.option('--project', required=True, help='Project name')
 @click.argument('bug_description')
 def triage(project, bug_description):
-    """De xuat ky su phu hop nhat de sua mot Bug moi"""
+    """Recommend the best-suited engineers for a new bug."""
     import pandas as pd
     import re
     try:
@@ -730,9 +730,9 @@ def triage(project, bug_description):
 
 
 @cli.command()
-@click.option('--project', required=True, help='Ten du an can kiem tra')
+@click.option('--project', required=True, help='Project name to inspect')
 def inspect(project):
-    """Kiem tra chat luong Do thi Tri thuc cua mot du an"""
+    """Inspect the quality of a project's knowledge graph."""
     try:
         import torch
         import torch_geometric.transforms as T
@@ -858,10 +858,10 @@ def inspect(project):
 
 
 @cli.command()
-@click.option('--project', required=True, help='Ten du an')
-@click.option('--developer', required=True, help='Ten developer can giai thich')
+@click.option('--project', required=True, help='Project name')
+@click.option('--developer', required=True, help='Developer name to explain')
 def explain(project, developer):
-    """Giai thich vi sao mot developer duoc de xuat"""
+    """Explain why a developer was recommended."""
     import pandas as pd
     try:
         import torch
@@ -985,10 +985,10 @@ def explain(project, developer):
     console.print("\n[bold green]Explanation Complete.[/bold green]")
 
 
-@cli.command()
-@click.option('--project', required=True, help='Ten du an can kiem tra')
-def doctor(project):
-    """Kiem tra moi truong, metadata va tinh hop le cua model/graph"""
+@cli.command('doctor')
+@click.option('--project', required=True, help='Project name to check')
+def simple_doctor(project):
+    """Check environment, metadata, and model/graph validity."""
     try:
         import torch
         import torch_geometric.transforms as T
