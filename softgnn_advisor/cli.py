@@ -228,7 +228,9 @@ def test_map(project, repo_path, pytest_args, mode, persist, max_tests):
 @click.option('--max-impact', default=30, show_default=True, help='Maximum impact hotspots to show')
 @click.option('--max-reviewers', default=3, show_default=True, help='Maximum reviewers to recommend')
 @click.option('--suggest-tests/--no-suggest-tests', default=True, show_default=True, help='Suggest tests for changed and impacted nodes')
-def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_impact, max_reviewers, suggest_tests):
+@click.option('--report/--no-report', default=False, show_default=True, help='Write a static HTML PR intelligence report')
+@click.option('--open-report', is_flag=True, help='Open the generated HTML report in a browser')
+def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_impact, max_reviewers, suggest_tests, report, open_report):
     """Scan a local PR/diff and recommend impact, reviewers, and tests."""
     from softgnn_advisor.core.pr_scanner import PRScanner
 
@@ -360,6 +362,15 @@ def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_
         for idx, test in enumerate(result.suggested_tests, start=1):
             tests_table.add_row(str(idx), test.name, test.test_type, test.suggested_file, test.reason)
         console.print(tests_table)
+
+    if report:
+        from softgnn_advisor.core.report_renderer import build_generate_report_payload
+        payload = build_generate_report_payload(
+            project=project,
+            scan_result=result,
+            repo_path=repo_path,
+        )
+        _save_and_show_report(project, payload, open_report=open_report)
 
     console.print("\n[bold green]PR Scan Complete.[/bold green] Results are evidence-grounded; GNN-only items are exploratory suggestions.")
 
@@ -1146,6 +1157,19 @@ def _render_apply_result(result):
             console.print(f"[yellow]... and {len(unique_warnings) - 5} more warnings[/yellow]")
 
 
+def _save_and_show_report(project, payload, open_report=False):
+    from pathlib import Path
+    import webbrowser
+    from softgnn_advisor.core.report_renderer import save_html_report
+
+    report_path, latest_path = save_html_report(project, payload)
+    console.print(f"[bold green]Report saved:[/bold green] {latest_path}")
+    console.print("[cyan]Open it to review PR impact, generated tests, and runtime proof.[/cyan]")
+    if open_report:
+        webbrowser.open(Path(latest_path).resolve().as_uri())
+    return report_path, latest_path
+
+
 
 @cli.command('setup')
 @click.argument('repo_path')
@@ -1312,7 +1336,9 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--partial-rollback/--batch-rollback', default=True, show_default=True, help='Keep passing generated tests and roll back only failing generated tests')
 @click.option('--pytest-stream/--no-pytest-stream', default=True, show_default=True, help='Stream pytest output while verification runs')
 @click.option('--require-runtime-proof/--no-require-runtime-proof', default=True, show_default=True, help='Rollback generated block if no runtime edge to target is proven after pytest pass')
-def simple_generate(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof):
+@click.option('--report/--no-report', default=True, show_default=True, help='Write a static HTML proof report after generate')
+@click.option('--open-report', is_flag=True, help='Open the generated HTML report in a browser')
+def simple_generate(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof, report, open_report):
     """Beginner generate: run scan, plan, save it, then apply that saved plan."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Workflow: scan -> plan -> apply | Replan: plan -> apply using same scan | Pytest: yes | Runtime map: yes[/cyan]")
@@ -1488,6 +1514,16 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
             require_runtime_proof=require_runtime_proof,
         )
         _render_apply_result(result)
+    if report:
+        from softgnn_advisor.core.report_renderer import build_generate_report_payload
+        payload = build_generate_report_payload(
+            project=project,
+            scan_result=scan_result,
+            plan_result=plan_result,
+            apply_result=result,
+            repo_path=repo_path,
+        )
+        _save_and_show_report(project, payload, open_report=open_report)
 
 
 @cli.command('apply')
@@ -1517,7 +1553,9 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
 @click.option('--partial-rollback/--batch-rollback', default=True, show_default=True, help='Keep passing generated tests and roll back only failing generated tests')
 @click.option('--pytest-stream/--no-pytest-stream', default=True, show_default=True, help='Stream pytest output while verification runs')
 @click.option('--require-runtime-proof/--no-require-runtime-proof', default=True, show_default=True, help='Rollback generated block if no runtime edge to target is proven after pytest pass')
-def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof):
+@click.option('--report/--no-report', default=True, show_default=True, help='Write a static HTML proof report after apply')
+@click.option('--open-report', is_flag=True, help='Open the generated HTML report in a browser')
+def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_stale_plan, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof, report, open_report):
     """Beginner apply: load a saved plan, patch tests, verify, rollback failures, map runtime."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Writes: tests only | Pytest: yes | Runtime map: yes[/cyan]")
@@ -1587,6 +1625,38 @@ def simple_apply(project, repo_path, base, head, plan_ref, ignore_plan, force_st
         require_runtime_proof=require_runtime_proof,
     )
     _render_apply_result(result)
+    if report:
+        from softgnn_advisor.core.report_renderer import build_generate_report_payload
+        class _PlanResult:
+            pass
+        plan_result = _PlanResult()
+        plan_result.plans = plans
+        payload = build_generate_report_payload(
+            project=project,
+            plan_result=plan_result,
+            apply_result=result,
+            repo_path=repo_path,
+        )
+        _save_and_show_report(project, payload, open_report=open_report)
+
+
+@cli.command('report')
+@click.option('--project', required=True, help='Project name created by setup/prepare')
+@click.option('--open', 'open_report', is_flag=True, help='Open latest HTML report in a browser')
+def simple_report(project, open_report):
+    """Open or print the latest SoftGNN HTML report."""
+    from pathlib import Path
+    import webbrowser
+    from softgnn_advisor.core.report_renderer import latest_report_path
+
+    path = Path(latest_report_path(project))
+    if not path.exists():
+        console.print(f"[yellow]No report found for project `{project}`.[/yellow]")
+        console.print(f"Run [cyan]softgnn generate --project {project}[/cyan] first.")
+        return
+    console.print(f"[bold green]Latest report:[/bold green] {path}")
+    if open_report:
+        webbrowser.open(path.resolve().as_uri())
 
 
 @cli.command('map')

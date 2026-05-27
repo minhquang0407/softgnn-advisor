@@ -1121,7 +1121,10 @@ def {test_name}():
                 'pytest_returncode': item.returncode,
                 'pytest_output_tail': (item.output or '')[-4000:],
                 'previous_generated_code': getattr(plan, 'code', ''),
-                'rollback_scope': 'generated_block' if item.status == 'rolled_back' else None,
+                'rollback_scope': 'generated_block' if 'rolled_back' in item.status else None,
+                'proof_status': getattr(item, 'proof_status', 'skipped'),
+                'proof_message': getattr(item, 'proof_message', ''),
+                'proof_edges': [getattr(edge, '__dict__', {}) for edge in (getattr(item, 'proof_edges', None) or [])],
             })
         payload = {
             'run_id': run_id,
@@ -1129,8 +1132,11 @@ def {test_name}():
             'created_at': datetime.now(timezone.utc).isoformat(),
             'summary': {
                 'kept': sum(1 for row in rows if row['status'] == 'kept'),
-                'rolled_back': sum(1 for row in rows if row['status'] in {'rolled_back', 'batch_rolled_back'}),
+                'rolled_back': sum(1 for row in rows if 'rolled_back' in row['status']),
                 'kept_failing': sum(1 for row in rows if row['status'] == 'kept_failing'),
+                'proof_pass': sum(1 for row in rows if row.get('proof_status') == 'pass'),
+                'proof_fail': sum(1 for row in rows if row.get('proof_status') == 'fail'),
+                'proof_skipped': sum(1 for row in rows if row.get('proof_status') == 'skipped'),
             },
             'results': rows,
         }

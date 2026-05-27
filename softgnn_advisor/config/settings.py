@@ -32,8 +32,9 @@ def get_project_paths(project_name: str) -> dict:
     training_dir = project_dir / "training"
     models_dir = project_dir / "models"
     scans_dir = project_dir / "scans"
+    reports_dir = project_dir / "reports"
     
-    for d in [project_dir, graph_dir, training_dir, models_dir, scans_dir]:
+    for d in [project_dir, graph_dir, training_dir, models_dir, scans_dir, reports_dir]:
         d.mkdir(parents=True, exist_ok=True)
         
     return {
@@ -52,6 +53,8 @@ def get_project_paths(project_name: str) -> dict:
         "PLANS_DIR": project_dir / "plans",
         "LATEST_PLAN_PATH": project_dir / "plans" / "latest_plan.json",
         "COVERAGE_WORK_DIR": project_dir / "coverage",
+        "REPORTS_DIR": reports_dir,
+        "LATEST_REPORT_PATH": reports_dir / "latest_report.html",
     }
 
 INPUT_DIM = 385
