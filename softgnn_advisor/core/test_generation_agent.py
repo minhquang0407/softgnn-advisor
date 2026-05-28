@@ -125,7 +125,7 @@ class TestGenerationAgent:
             failure_feedback=failure_feedback,
         )
 
-    def plan_from_scan(self, scan, mode='plan', base='main', head='HEAD', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=False, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto', partial_rollback=True, pytest_stream=True, failure_feedback=None):
+    def plan_from_scan(self, scan, mode='plan', base='main', head='HEAD', max_targets=3, verify=True, repair_iters=0, target_id=None, source_file=None, only_file=None, refresh_runtime=None, runtime_mode='auto', confirm_pr_scan=False, keep_failing_tests=False, pytest_args=None, generation_strategy='auto', llm_required=False, llm_temperature=0.1, llm_max_tokens=4096, change_source='auto', partial_rollback=True, pytest_stream=True, failure_feedback=None):
         if mode not in ('plan', 'patch'):
             raise ValueError("mode must be 'plan' or 'patch'")
         if generation_strategy not in ('template', 'llm', 'auto'):
@@ -139,7 +139,13 @@ class TestGenerationAgent:
                 raise ValueError('source_file is required when target_id cannot be resolved from PR scan')
             targets = [TestGenerationTarget(target_id, source_file, 'explicit target override', 999.0, ['explicit user/CLI target'], self._suggest_test_file(source_file))]
         else:
-            targets = self._rank_targets(scan, warnings)[:max_targets]
+            targets = self._rank_targets(scan, warnings)
+            if only_file:
+                normalized = only_file.replace('\\', '/').strip('/')
+                targets = [t for t in targets if (t.source_file or '').replace('\\', '/').strip('/') == normalized]
+                if not targets:
+                    warnings.append(f'No generation targets found in {normalized} for the current scan.')
+            targets = targets[:max_targets]
         plans = [self._build_plan(target, generation_strategy, warnings, llm_required, llm_temperature, llm_max_tokens, failure_feedback=failure_feedback) for target in targets]
         files_written = []
         pytest_returncode = None

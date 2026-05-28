@@ -1299,6 +1299,21 @@ def simple_refresh(project, repo_path, train, runtime, pytest_args):
         run_optimization(project)
         console.print("[bold green]Training completed.[/bold green]")
 
+@cli.command('dashboard')
+@click.option('--project', required=True, help='Project name created by setup/prepare')
+@click.option('--repo-path', default=None, help='Optional override; otherwise read from project metadata')
+@click.option('--host', default='127.0.0.1', show_default=True, help='Dashboard bind host; keep localhost for safety')
+@click.option('--port', default=8765, show_default=True, help='Dashboard port')
+@click.option('--open', 'open_dashboard', is_flag=True, help='Open the dashboard in a browser')
+def dashboard(project, repo_path, host, port, open_dashboard):
+    """Start the local interactive SoftGNN dashboard."""
+    repo_path = repo_path or _repo_path_for_project(project)
+    if host not in {'127.0.0.1', 'localhost'}:
+        raise click.ClickException('For safety, dashboard currently only supports 127.0.0.1/localhost.')
+    from softgnn_advisor.core.dashboard_server import start_dashboard
+    start_dashboard(project, repo_path, host=host, port=port, open_browser=open_dashboard)
+
+
 @cli.command('scan')
 @click.option('--project', required=True, help='Project name created by setup/prepare')
 @click.option('--repo-path', default=None, help='Optional override; otherwise read from project metadata')
@@ -1353,6 +1368,7 @@ def simple_scan(project, repo_path, base, head, source, mode, max_impact, smart,
 @click.option('--head', default='HEAD', show_default=True)
 @click.option('--target', default=None, help='Target id, e.g. FUNC:foo')
 @click.option('--file', 'source_file', default=None, help='Source file for explicit target')
+@click.option('--only-file', default=None, help='Generate only for targets in this source file')
 @click.option('--max-targets', default=3, show_default=True)
 @click.option('--strategy', type=click.Choice(['template', 'llm', 'auto']), default='llm', show_default=True)
 @click.option('--no-llm', is_flag=True, help='Do not call LLM; generate template tests')
@@ -1362,7 +1378,7 @@ def simple_scan(project, repo_path, base, head, source, mode, max_impact, smart,
 @click.option('--scan', 'scan_ref', default='latest', show_default=True, help='Saved scan id/path to plan from; defaults to latest')
 @click.option('--refresh-scan', is_flag=True, help='Run a fresh scan before planning')
 @click.option('--force-stale-scan', is_flag=True, help='Plan from a stale saved scan')
-def simple_plan(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, source, llm_required, save_plan, scan_ref, refresh_scan, force_stale_scan):
+def simple_plan(project, repo_path, base, head, target, source_file, only_file, max_targets, strategy, no_llm, source, llm_required, save_plan, scan_ref, refresh_scan, force_stale_scan):
     """Beginner plan: scan, generate proposed tests with LLM by default, and save a reusable plan bundle."""
     repo_path = repo_path or _repo_path_for_project(project)
     if no_llm:
@@ -1410,6 +1426,7 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
         max_targets=max_targets,
         target_id=target,
         source_file=source_file,
+        only_file=only_file,
         refresh_runtime=False,
         generation_strategy=strategy,
         llm_required=llm_required,
@@ -1430,6 +1447,7 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--head', default='HEAD', show_default=True)
 @click.option('--target', default=None, help='Target id, e.g. FUNC:foo')
 @click.option('--file', 'source_file', default=None, help='Source file for explicit target')
+@click.option('--only-file', default=None, help='Generate only for targets in this source file')
 @click.option('--max-targets', default=3, show_default=True)
 @click.option('--strategy', type=click.Choice(['template', 'llm', 'auto']), default='llm', show_default=True)
 @click.option('--no-llm', is_flag=True, help='Do not call LLM; generate template tests')
@@ -1451,7 +1469,7 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--report/--no-report', default=True, show_default=True, help='Write a static HTML proof report after generate')
 @click.option('--open-report', is_flag=True, help='Open the generated HTML report in a browser')
 @click.option('--yes', 'assume_yes', is_flag=True, help='Accept safe interactive prompts, such as using HEAD~1...HEAD after a same-branch commit')
-def simple_generate(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof, report, open_report, assume_yes):
+def simple_generate(project, repo_path, base, head, target, source_file, only_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof, report, open_report, assume_yes):
     """Beginner generate: run scan, plan, save it, then apply that saved plan."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Workflow: scan -> plan -> apply | Replan: plan -> apply using same scan | Pytest: yes | Runtime map: yes[/cyan]")
@@ -1568,6 +1586,7 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
         max_targets=max_targets,
         target_id=target,
         source_file=source_file,
+        only_file=only_file,
         verify=False,
         repair_iters=0,
         refresh_runtime=False,
