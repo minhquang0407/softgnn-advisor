@@ -230,7 +230,9 @@ def test_map(project, repo_path, pytest_args, mode, persist, max_tests):
 @click.option('--suggest-tests/--no-suggest-tests', default=True, show_default=True, help='Suggest tests for changed and impacted nodes')
 @click.option('--report/--no-report', default=False, show_default=True, help='Write a static HTML PR intelligence report')
 @click.option('--open-report', is_flag=True, help='Open the generated HTML report in a browser')
-def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_impact, max_reviewers, suggest_tests, report, open_report):
+@click.option('--smart/--no-smart', default=True, show_default=True, help='Use safe read-only fallback when the default diff is empty')
+@click.option('--fallback-full-scan', is_flag=True, help='If smart scan finds no git/filesystem changes, scan the full project')
+def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_impact, max_reviewers, suggest_tests, report, open_report, smart, fallback_full_scan):
     """Scan a local PR/diff and recommend impact, reviewers, and tests."""
     from softgnn_advisor.core.pr_scanner import PRScanner
 
@@ -243,7 +245,22 @@ def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_
     ))
     try:
         scanner = PRScanner(project, repo_path=repo_path)
-        result = scanner.scan(base=base, head=head, mode=mode, gnn_types=gnn_types, max_impact=max_impact, max_reviewers=max_reviewers, suggest_tests=suggest_tests, change_source=change_source)
+        effective_repo = scanner.repo_path
+        result, effective_base, effective_head, effective_source = _run_read_only_scan(
+            scanner,
+            project,
+            effective_repo,
+            base,
+            head,
+            mode=mode,
+            gnn_types=gnn_types,
+            max_impact=max_impact,
+            max_reviewers=max_reviewers,
+            suggest_tests=suggest_tests,
+            change_source=change_source,
+            smart=smart,
+            fallback_full_scan=fallback_full_scan,
+        )
     except FileNotFoundError as e:
         console.print(f"[bold red][ERROR] {e}[/bold red]")
         return
@@ -264,19 +281,6 @@ def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_
     summary.add_row("Reviewer recommendations", str(len(result.reviewers)))
     summary.add_row("Test suggestions", str(len(result.suggested_tests)))
     console.print(summary)
-
-    if not result.changed_files:
-        console.print(Panel(
-            "[bold yellow]No changed files were found for this scan.[/bold yellow]\n\n"
-            f"SoftGNN scanned [cyan]{base}...{head}[/cyan]. If you just ran [cyan]git pull[/cyan] on the same branch, "
-            "then your local branch and HEAD now point to the same commit, so the default diff is empty.\n\n"
-            "Try one of these:\n"
-            f"  [cyan]softgnn pr-scan --project {project} --base HEAD~1 --head HEAD[/cyan]  # scan the last pulled commit\n"
-            f"  [cyan]softgnn pr-scan --project {project} --change-source filesystem[/cyan]    # scan local uncommitted file changes\n"
-            f"  [cyan]softgnn pr-scan --project {project} --change-source full-scan[/cyan]     # scan the full project",
-            title="Zero-diff hint",
-            border_style="yellow",
-        ))
 
     if result.changed_files:
         files_table = Table(title="Changed Files")
@@ -1183,6 +1187,49 @@ def _save_and_show_report(project, payload, open_report=False):
     return report_path, latest_path
 
 
+def _run_read_only_scan(scanner, project, repo_path, base, head, mode='hybrid', gnn_types='File,Class,Function', max_impact=30, max_reviewers=3, suggest_tests=True, change_source='auto', smart=True, fallback_full_scan=False):
+    result = scanner.scan(base=base, head=head, mode=mode, gnn_types=gnn_types, max_impact=max_impact, max_reviewers=max_reviewers, suggest_tests=suggest_tests, change_source=change_source)
+    effective_base, effective_head, effective_source = base, head, change_source
+    if result.changed_files or change_source != 'auto' or not smart:
+        return result, effective_base, effective_head, effective_source
+
+    from softgnn_advisor.core.scan_fallback import resolve_read_only_scan_range
+    decision = resolve_read_only_scan_range(repo_path, base=base, head=head)
+    for message in decision.messages:
+        console.print(f"[yellow]{message}[/yellow]")
+    if decision.fallback_used and decision.changed_files:
+        effective_base, effective_head, effective_source = decision.base, decision.head, 'git'
+        result = scanner.scan(base=effective_base, head=effective_head, mode=mode, gnn_types=gnn_types, max_impact=max_impact, max_reviewers=max_reviewers, suggest_tests=suggest_tests, change_source='git')
+        result.warnings.insert(0, f"Smart scan fallback used: {decision.reason} ({effective_base[:7]}...{effective_head}).")
+        return result, effective_base, effective_head, effective_source
+
+    fs_result = scanner.scan(base=base, head=head, mode=mode, gnn_types=gnn_types, max_impact=max_impact, max_reviewers=max_reviewers, suggest_tests=suggest_tests, change_source='filesystem')
+    if fs_result.changed_files:
+        fs_result.warnings.insert(0, 'Smart scan fallback used: filesystem snapshot diff.')
+        return fs_result, base, head, 'filesystem'
+
+    if fallback_full_scan:
+        full_result = scanner.scan(base=base, head=head, mode=mode, gnn_types=gnn_types, max_impact=max_impact, max_reviewers=max_reviewers, suggest_tests=suggest_tests, change_source='full-scan')
+        full_result.warnings.insert(0, 'Smart scan fallback used: full project scan.')
+        return full_result, base, head, 'full-scan'
+
+    _print_zero_diff_hint(project, base, head)
+    return result, effective_base, effective_head, effective_source
+
+
+def _print_zero_diff_hint(project, base, head):
+    console.print(Panel(
+        "[bold yellow]No changed files were found for this scan.[/bold yellow]\n\n"
+        f"SoftGNN scanned [cyan]{base}...{head}[/cyan]. If you just pulled shared changes and want SoftGNN memory updated, run:\n"
+        f"  [cyan]softgnn refresh --project {project}[/cyan]\n\n"
+        "Other useful commands:\n"
+        f"  [cyan]softgnn pr-scan --project {project} --base HEAD~1 --head HEAD[/cyan]  # scan the latest commit\n"
+        f"  [cyan]softgnn pr-scan --project {project} --change-source filesystem[/cyan]    # scan local uncommitted file changes\n"
+        f"  [cyan]softgnn pr-scan --project {project} --change-source full-scan[/cyan]     # scan the full project",
+        title="Zero-diff hint",
+        border_style="yellow",
+    ))
+
 
 @cli.command('setup')
 @click.argument('repo_path')
@@ -1213,6 +1260,45 @@ def simple_setup(repo_path, project, train):
         console.print("[yellow]Training skipped. Use --train if you want experimental GNN ranking.[/yellow]")
 
 
+@cli.command('refresh')
+@click.option('--project', required=True, help='Project name created by setup/prepare')
+@click.option('--repo-path', default=None, help='Optional override; otherwise read from project metadata')
+@click.option('--train/--no-train', default=False, show_default=True, help='Run experimental HGT training after refresh')
+@click.option('--runtime/--no-runtime', default=False, show_default=True, help='Refresh pytest runtime coverage after graph rebuild')
+@click.option('--pytest', 'pytest_args', default='tests', show_default=True, help='Arguments passed to pytest for --runtime')
+def simple_refresh(project, repo_path, train, runtime, pytest_args):
+    """Refresh SoftGNN graph and filesystem snapshot for the current checkout."""
+    repo_path = repo_path or _repo_path_for_project(project)
+    console.rule(f"[bold cyan]SoftGNN Refresh - Project: {project}")
+    console.print(f"Repository: [yellow]{os.path.abspath(repo_path)}[/yellow]")
+
+    from softgnn_advisor.scripts.etl_run import run_etl_pipeline
+    from softgnn_advisor.core.change_provider import build_filesystem_snapshot, save_filesystem_snapshot, snapshot_path_for_project
+
+    console.print("[cyan]Updating knowledge graph...[/cyan]")
+    run_etl_pipeline(repo_path, project)
+    console.print("[cyan]Updating filesystem snapshot...[/cyan]")
+    snapshot = build_filesystem_snapshot(repo_path)
+    save_filesystem_snapshot(snapshot_path_for_project(project), snapshot)
+    console.print("[bold green]Graph and filesystem snapshot refreshed.[/bold green]")
+
+    if runtime:
+        console.print("[cyan]Refreshing runtime coverage map...[/cyan]")
+        from softgnn_advisor.infrastructure.pipelines.runtime_coverage_mapper import RuntimeCoverageMapper
+        runtime_result = RuntimeCoverageMapper(project, repo_path=repo_path).map_runtime_coverage(pytest_args=pytest_args, mode='per-test', persist=True)
+        console.print(f"[bold green]Runtime mapping refreshed:[/bold green] {len(runtime_result.runtime_edges)} edge(s)")
+
+    if train:
+        try:
+            from softgnn_advisor.scripts.train_model import run_optimization
+        except ImportError as exc:
+            raise click.ClickException(
+                "Training requires GNN dependencies. Install with: pip install \"softgnn-advisor[gnn]\" "
+                "or pip install \"softgnn-advisor[all]\""
+            ) from exc
+        run_optimization(project)
+        console.print("[bold green]Training completed.[/bold green]")
+
 @cli.command('scan')
 @click.option('--project', required=True, help='Project name created by setup/prepare')
 @click.option('--repo-path', default=None, help='Optional override; otherwise read from project metadata')
@@ -1221,15 +1307,28 @@ def simple_setup(repo_path, project, train):
 @click.option('--source', type=click.Choice(['auto', 'git', 'filesystem', 'full-scan']), default='auto', show_default=True)
 @click.option('--mode', type=click.Choice(['deterministic', 'hybrid', 'gnn']), default='hybrid', show_default=True)
 @click.option('--max-impact', default=30, show_default=True)
-def simple_scan(project, repo_path, base, head, source, mode, max_impact):
+@click.option('--smart/--no-smart', default=True, show_default=True, help='Use safe read-only fallback when the default diff is empty')
+@click.option('--fallback-full-scan', is_flag=True, help='If smart scan finds no git/filesystem changes, scan the full project')
+def simple_scan(project, repo_path, base, head, source, mode, max_impact, smart, fallback_full_scan):
     """Beginner scan: detect changes and suggest coverage targets without LLM calls."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]LLM: not used | Writes: none | Pytest: not run[/cyan]")
     from softgnn_advisor.core.pr_scanner import PRScanner
     from softgnn_advisor.core.scan_cache import save_scan_bundle
     scanner = PRScanner(project, repo_path=repo_path)
-    result = scanner.scan(base=base, head=head, mode=mode, max_impact=max_impact, change_source=source)
-    scan_path, latest_path, bundle = save_scan_bundle(project, result, repo_path, base=base, head=head, change_source=source, mode=mode)
+    result, effective_base, effective_head, effective_source = _run_read_only_scan(
+        scanner,
+        project,
+        scanner.repo_path,
+        base,
+        head,
+        mode=mode,
+        max_impact=max_impact,
+        change_source=source,
+        smart=smart,
+        fallback_full_scan=fallback_full_scan,
+    )
+    scan_path, latest_path, bundle = save_scan_bundle(project, result, repo_path, base=effective_base, head=effective_head, change_source=effective_source, mode=mode)
     for warning in result.warnings:
         console.print(f"[yellow]{warning}[/yellow]")
     summary = Table(title="Scan Summary")
@@ -1351,7 +1450,8 @@ def simple_plan(project, repo_path, base, head, target, source_file, max_targets
 @click.option('--require-runtime-proof/--no-require-runtime-proof', default=True, show_default=True, help='Rollback generated block if no runtime edge to target is proven after pytest pass')
 @click.option('--report/--no-report', default=True, show_default=True, help='Write a static HTML proof report after generate')
 @click.option('--open-report', is_flag=True, help='Open the generated HTML report in a browser')
-def simple_generate(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof, report, open_report):
+@click.option('--yes', 'assume_yes', is_flag=True, help='Accept safe interactive prompts, such as using HEAD~1...HEAD after a same-branch commit')
+def simple_generate(project, repo_path, base, head, target, source_file, max_targets, strategy, no_llm, llm_provider, llm_model, llm_base_url, llm_api_key_env, llm_required, llm_temperature, llm_max_tokens, source, repair, replan_iters, pytest_args, keep_failing_tests, partial_rollback, pytest_stream, require_runtime_proof, report, open_report, assume_yes):
     """Beginner generate: run scan, plan, save it, then apply that saved plan."""
     repo_path = repo_path or _repo_path_for_project(project)
     console.print("[cyan]Workflow: scan -> plan -> apply | Replan: plan -> apply using same scan | Pytest: yes | Runtime map: yes[/cyan]")
@@ -1392,6 +1492,44 @@ def simple_generate(project, repo_path, base, head, target, source_file, max_tar
     scan_summary.add_row("Missing coverage targets", str(len(scan_result.missing_coverage)))
     scan_summary.add_row("Related existing tests", str(len(scan_result.related_tests)))
     console.print(scan_summary)
+
+    if not scan_result.changed_files and source in ('auto', 'git'):
+        from softgnn_advisor.core.scan_fallback import generate_same_branch_fallback
+        decision = generate_same_branch_fallback(scanner.repo_path, base=base, head=head)
+        for message in decision.messages:
+            console.print(f"[yellow]{message}[/yellow]")
+        if decision.reason == 'dirty-worktree':
+            console.print(Panel(
+                "For reproducible generated tests, commit your code first:\n"
+                "  [cyan]git add .[/cyan]\n"
+                "  [cyan]git commit -m \"your change\"[/cyan]\n"
+                f"  [cyan]softgnn generate --project {project}[/cyan]\n\n"
+                "Or explicitly generate from local file changes:\n"
+                f"  [cyan]softgnn generate --project {project} --source filesystem[/cyan]",
+                title="Commit before generate",
+                border_style="yellow",
+            ))
+            return
+        if decision.reason == 'same-branch-commit':
+            use_fallback = assume_yes or click.confirm("Use HEAD~1...HEAD for this generate run?", default=False)
+            if not use_fallback:
+                console.print("[yellow]Generate stopped. Re-run with --base HEAD~1 --head HEAD or --yes if this is intentional.[/yellow]")
+                return
+            base, head, source = decision.base, decision.head, 'git'
+            console.print(f"[bold green]Using generate range {base}...{head}.[/bold green]")
+            scan_result = scanner.scan(base=base, head=head, mode='hybrid', max_impact=30, change_source=source)
+            scan_path, latest_scan_path, scan_bundle = save_scan_bundle(project, scan_result, repo_path, base=base, head=head, change_source=source, mode='hybrid')
+            for warning in scan_result.warnings:
+                console.print(f"[yellow]{warning}[/yellow]")
+        else:
+            console.print(Panel(
+                "Generate did not fallback automatically because it writes tests.\n\n"
+                f"If you just pulled shared changes, refresh SoftGNN memory:\n  [cyan]softgnn refresh --project {project}[/cyan]\n\n"
+                f"If you intentionally want tests for the latest commit:\n  [cyan]softgnn generate --project {project} --base HEAD~1 --head HEAD[/cyan]\n\n"
+                f"If you want tests for local uncommitted changes:\n  [cyan]softgnn generate --project {project} --source filesystem[/cyan]",
+                title="No generate diff",
+                border_style="yellow",
+            ))
 
     if scan_result.changed_nodes:
         nodes_table = Table(title="Changed Nodes")
