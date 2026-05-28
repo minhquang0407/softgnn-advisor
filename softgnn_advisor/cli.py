@@ -265,6 +265,19 @@ def pr_scan(project, base, head, repo_path, change_source, mode, gnn_types, max_
     summary.add_row("Test suggestions", str(len(result.suggested_tests)))
     console.print(summary)
 
+    if not result.changed_files:
+        console.print(Panel(
+            "[bold yellow]No changed files were found for this scan.[/bold yellow]\n\n"
+            f"SoftGNN scanned [cyan]{base}...{head}[/cyan]. If you just ran [cyan]git pull[/cyan] on the same branch, "
+            "then your local branch and HEAD now point to the same commit, so the default diff is empty.\n\n"
+            "Try one of these:\n"
+            f"  [cyan]softgnn pr-scan --project {project} --base HEAD~1 --head HEAD[/cyan]  # scan the last pulled commit\n"
+            f"  [cyan]softgnn pr-scan --project {project} --change-source filesystem[/cyan]    # scan local uncommitted file changes\n"
+            f"  [cyan]softgnn pr-scan --project {project} --change-source full-scan[/cyan]     # scan the full project",
+            title="Zero-diff hint",
+            border_style="yellow",
+        ))
+
     if result.changed_files:
         files_table = Table(title="Changed Files")
         files_table.add_column("#", justify="right", style="cyan")
